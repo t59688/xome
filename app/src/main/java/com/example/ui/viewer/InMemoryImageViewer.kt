@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -51,6 +52,9 @@ import androidx.compose.material.icons.automirrored.filled.RotateRight
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Security
@@ -83,6 +87,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -95,14 +100,15 @@ import com.example.crypto.VaultSessionManager
 import com.example.data.VaultFileEntity
 import com.example.storage.VaultStorageManager
 import com.example.ui.i18n.LocalAppStrings
-import com.example.ui.theme.CalcAccentOrange
+import com.example.ui.i18n.AppLanguage
+import com.example.ui.theme.CalcAccentCopper
 import com.example.ui.theme.CalcClearKeyText
 import com.example.ui.theme.CalcTextMuted
 import com.example.ui.theme.CalcTextPrimary
 import com.example.ui.theme.CalcTextSecondary
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.VaultBorderSubtle
-import com.example.ui.theme.VaultCyanPrimary
+import com.example.ui.theme.VaultAccentPrimary
 import com.example.ui.theme.VaultEmeraldSuccess
 import com.example.ui.theme.VaultSurface
 import com.example.ui.theme.VaultSurfaceElevated
@@ -118,6 +124,7 @@ import kotlinx.coroutines.withContext
 
 data class DecryptedImagePayload(
     val fullImageBitmap: ImageBitmap,
+    val androidBitmap: Bitmap,
     val rawImageBytes: ByteArray,
     val imageWidth: Int,
     val imageHeight: Int,
@@ -132,8 +139,9 @@ fun InMemoryImageViewerOverlay(
     imageFiles: List<VaultFileEntity>,
     initialFileId: Long,
     onClose: () -> Unit,
-    onExportFile: (VaultFileEntity) -> Unit,
-    onShredFile: (VaultFileEntity) -> Unit
+    onExportFile: (VaultFileEntity, (Result<String>) -> Unit) -> Unit,
+    onShredFile: (VaultFileEntity) -> Unit,
+    onStatusBarContrastChanged: (Boolean?) -> Unit
 ) {
     BackHandler { onClose() }
     val strings = LocalAppStrings.current
@@ -152,6 +160,16 @@ fun InMemoryImageViewerOverlay(
     )
 
     var showChrome by remember { mutableStateOf(true) }
+    var isExporting by remember { mutableStateOf(false) }
+    var exportFeedback by remember { mutableStateOf<ViewerExportFeedback?>(null) }
+    DisposableEffect(Unit) {
+        onDispose { onStatusBarContrastChanged(null) }
+    }
+    LaunchedEffect(pagerState.currentPage) {
+        // Until the new page is decoded, the viewer background is dark.
+        onStatusBarContrastChanged(false)
+        exportFeedback = null
+    }
     var showStreamTelemetry by remember { mutableStateOf(false) }
     var isCurrentPageZoomed by remember { mutableStateOf(false) }
 
@@ -195,6 +213,9 @@ fun InMemoryImageViewerOverlay(
                 },
                 onSingleTapToggleChrome = {
                     showChrome = !showChrome
+                },
+                onStatusBarContrastChanged = { darkIcons ->
+                    if (isCurrentPage) onStatusBarContrastChanged(darkIcons)
                 }
             )
         }
@@ -263,19 +284,35 @@ fun InMemoryImageViewerOverlay(
                             Icon(
                                 imageVector = Icons.Default.Memory,
                                 contentDescription = "Toggle cryptographic stream HUD",
-                                tint = if (showStreamTelemetry) VaultCyanPrimary else CalcTextSecondary
+                                tint = if (showStreamTelemetry) VaultAccentPrimary else CalcTextSecondary
                             )
                         }
 
                         IconButton(
-                            onClick = { onExportFile(currentFile) },
+                            onClick = {
+                                isExporting = true
+                                exportFeedback = null
+                                onExportFile(currentFile) { result ->
+                                    isExporting = false
+                                    exportFeedback = viewerExportFeedback(result, strings.language == AppLanguage.ZH)
+                                }
+                            },
+                            enabled = !isExporting,
                             modifier = Modifier.testTag("viewer_export_button")
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Download,
-                                contentDescription = "Decrypt and restore to Downloads",
-                                tint = VaultCyanPrimary
-                            )
+                            if (isExporting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = VaultAccentPrimary
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = "Decrypt and restore to Downloads",
+                                    tint = VaultAccentPrimary
+                                )
+                            }
                         }
 
                         IconButton(
@@ -291,12 +328,21 @@ fun InMemoryImageViewerOverlay(
                     }
                 }
 
+                AnimatedVisibility(visible = exportFeedback != null) {
+                    exportFeedback?.let { feedback ->
+                        ViewerExportFeedbackBanner(
+                            feedback = feedback,
+                            onDismiss = { exportFeedback = null }
+                        )
+                    }
+                }
+
                 // Live RandomAccessDecryptedStream & BitmapRegionDecoder HUD
                 AnimatedVisibility(visible = showStreamTelemetry) {
                     Surface(
                         color = VaultSurfaceElevated.copy(alpha = 0.88f),
                         shape = RoundedCornerShape(14.dp),
-                        border = BorderStroke(1.dp, VaultCyanPrimary.copy(alpha = 0.35f)),
+                        border = BorderStroke(1.dp, VaultAccentPrimary.copy(alpha = 0.35f)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
@@ -310,7 +356,7 @@ fun InMemoryImageViewerOverlay(
                                 Text(
                                     text = "BLOB: blobs/${currentFile.blobFilename.take(12)}….dat",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = VaultCyanPrimary
+                                    color = VaultAccentPrimary
                                 )
                                 Text(
                                     text = "DECODER: $activeTileLabel",
@@ -322,7 +368,7 @@ fun InMemoryImageViewerOverlay(
                                 Text(
                                     text = "ZOOM: ${"%.2f".format(currentScaleDisplay)}x",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = CalcAccentOrange
+                                    color = CalcAccentCopper
                                 )
                                 Text(
                                     text = "ROT: ${currentRotationDisplay.roundToInt()}°",
@@ -395,8 +441,8 @@ fun InMemoryImageViewerOverlay(
                     Surface(
                         onClick = { resetTransformSignal++ },
                         shape = RoundedCornerShape(14.dp),
-                        color = VaultCyanPrimary.copy(alpha = 0.16f),
-                        border = BorderStroke(1.dp, VaultCyanPrimary.copy(alpha = 0.45f)),
+                        color = VaultAccentPrimary.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, VaultAccentPrimary.copy(alpha = 0.45f)),
                         modifier = Modifier
                             .height(44.dp)
                             .testTag("viewer_reset_transform")
@@ -409,13 +455,13 @@ fun InMemoryImageViewerOverlay(
                             Icon(
                                 imageVector = Icons.Default.CenterFocusStrong,
                                 contentDescription = "Reset zoom and rotation",
-                                tint = VaultCyanPrimary,
+                                tint = VaultAccentPrimary,
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
                                 text = strings.fit1xBtn,
                                 style = MaterialTheme.typography.labelLarge,
-                                color = VaultCyanPrimary,
+                                color = VaultAccentPrimary,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -434,10 +480,12 @@ private fun InMemorySingleImagePage(
     rotateDelta: Float,
     resetSignal: Int,
     onZoomedStateChanged: (isZoomed: Boolean, scale: Float, rotation: Float, tileInfo: String) -> Unit,
-    onSingleTapToggleChrome: () -> Unit
+    onSingleTapToggleChrome: () -> Unit,
+    onStatusBarContrastChanged: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val statusBarHeight = WindowInsets.statusBars.getTop(LocalDensity.current)
 
     var payload by remember(fileEntity.id) { mutableStateOf<DecryptedImagePayload?>(null) }
     var highResRegionTile by remember(fileEntity.id) { mutableStateOf<ImageBitmap?>(null) }
@@ -478,6 +526,7 @@ private fun InMemorySingleImagePage(
                     if (decoded != null) {
                         payload = DecryptedImagePayload(
                             fullImageBitmap = decoded.asImageBitmap(),
+                            androidBitmap = decoded,
                             rawImageBytes = fullBytes,
                             imageWidth = decoded.width,
                             imageHeight = decoded.height,
@@ -497,6 +546,21 @@ private fun InMemorySingleImagePage(
                 Arrays.fill(masterKey, 0.toByte())
             }
         }
+    }
+
+    LaunchedEffect(isCurrentPage, payload, containerSize, statusBarHeight) {
+        val loaded = payload ?: return@LaunchedEffect
+        if (!isCurrentPage || containerSize == IntSize.Zero) return@LaunchedEffect
+        onStatusBarContrastChanged(
+            ImageViewerStatusBarContrast.needsDarkIcons(
+                imageWidth = loaded.imageWidth,
+                imageHeight = loaded.imageHeight,
+                viewportWidth = containerSize.width,
+                viewportHeight = containerSize.height,
+                statusBarHeight = statusBarHeight,
+                pixelAt = loaded.androidBitmap::getPixel
+            )
+        )
     }
 
     // Handle toolbar ±90° rotation
@@ -698,7 +762,7 @@ private fun InMemorySingleImagePage(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    CircularProgressIndicator(color = VaultCyanPrimary)
+                    CircularProgressIndicator(color = VaultAccentPrimary)
                     Text(
                         text = LocalAppStrings.current.streamingChunksIntoRam,
                         style = MaterialTheme.typography.labelLarge,
@@ -727,15 +791,80 @@ private fun InMemorySingleImagePage(
     }
 }
 
+private data class ViewerExportFeedback(val message: String, val isError: Boolean)
+
+private fun viewerExportFeedback(result: Result<String>, chinese: Boolean): ViewerExportFeedback =
+    result.fold(
+        onSuccess = { path ->
+            ViewerExportFeedback(
+                message = if (chinese) "已解密保存至 $path" else "Decrypted file saved to $path",
+                isError = false
+            )
+        },
+        onFailure = { error ->
+            ViewerExportFeedback(
+                message = if (chinese) "保存失败：${error.localizedMessage ?: "未知错误"}"
+                          else "Save failed: ${error.localizedMessage ?: "Unknown error"}",
+                isError = true
+            )
+        }
+    )
+
+@Composable
+private fun ViewerExportFeedbackBanner(
+    feedback: ViewerExportFeedback,
+    onDismiss: () -> Unit
+) {
+    val accent = if (feedback.isError) CalcClearKeyText else VaultEmeraldSuccess
+    Surface(
+        onClick = onDismiss,
+        color = VaultSurface,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, accent.copy(alpha = .5f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("viewer_export_feedback")
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = if (feedback.isError) Icons.Default.ErrorOutline
+                              else Icons.Default.CheckCircle,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(20.dp)
+            )
+            Text(
+                text = feedback.message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = CalcTextPrimary,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Dismiss export result",
+                tint = CalcTextSecondary,
+                modifier = Modifier.size(17.dp)
+            )
+        }
+    }
+}
+
 @Composable
 fun InMemoryDocumentViewerDialog(
     fileEntity: VaultFileEntity,
     decryptedContent: String,
     onClose: () -> Unit,
-    onExportFile: (VaultFileEntity) -> Unit,
+    onExportFile: (VaultFileEntity, (Result<String>) -> Unit) -> Unit,
     onShredFile: (VaultFileEntity) -> Unit
 ) {
     BackHandler { onClose() }
+    val language = LocalAppStrings.current.language
+    var isExporting by remember { mutableStateOf(false) }
+    var exportFeedback by remember { mutableStateOf<ViewerExportFeedback?>(null) }
 
     Box(
         modifier = Modifier
@@ -782,15 +911,33 @@ fun InMemoryDocumentViewerDialog(
                         Text(
                             text = LocalAppStrings.current.inMemoryDecryptedStreamSubtitle(fileEntity.blobFilename.take(10)),
                             style = MaterialTheme.typography.labelSmall,
-                            color = VaultCyanPrimary
+                            color = VaultAccentPrimary
                         )
                     }
-                    IconButton(onClick = { onExportFile(fileEntity) }) {
-                        Icon(
-                            imageVector = Icons.Default.Download,
-                            contentDescription = "Decrypt and export",
-                            tint = VaultCyanPrimary
-                        )
+                    IconButton(
+                        onClick = {
+                            isExporting = true
+                            exportFeedback = null
+                            onExportFile(fileEntity) { result ->
+                                isExporting = false
+                                exportFeedback = viewerExportFeedback(result, language == AppLanguage.ZH)
+                            }
+                        },
+                        enabled = !isExporting
+                    ) {
+                        if (isExporting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = VaultAccentPrimary
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = "Decrypt and export",
+                                tint = VaultAccentPrimary
+                            )
+                        }
                     }
                     IconButton(onClick = { onShredFile(fileEntity) }) {
                         Icon(
@@ -799,6 +946,12 @@ fun InMemoryDocumentViewerDialog(
                             tint = CalcClearKeyText
                         )
                     }
+                }
+            }
+
+            AnimatedVisibility(visible = exportFeedback != null) {
+                exportFeedback?.let { feedback ->
+                    ViewerExportFeedbackBanner(feedback, onDismiss = { exportFeedback = null })
                 }
             }
 

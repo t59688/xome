@@ -6,14 +6,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 private val XomeDarkColorScheme = darkColorScheme(
-    primary = VaultCyanPrimary,
-    onPrimary = Color(0xFF001F26),
-    primaryContainer = Color(0xFF082E38),
-    onPrimaryContainer = Color(0xFFB3F6FF),
-    secondary = CalcAccentOrange,
-    onSecondary = Color(0xFF280C00),
-    secondaryContainer = Color(0xFF3E1908),
-    onSecondaryContainer = Color(0xFFFFDBCF),
+    primary = VaultAccentPrimary,
+    onPrimary = Color(0xFF231710),
+    primaryContainer = Color(0xFF3E3025),
+    onPrimaryContainer = Color(0xFFFFD8AF),
+    secondary = CalcAccentMuted,
+    onSecondary = Color(0xFF282019),
+    secondaryContainer = Color(0xFF342C26),
+    onSecondaryContainer = Color(0xFFEAD5C1),
     tertiary = VaultEmeraldSuccess,
     onTertiary = Color(0xFF002114),
     background = CalcChassisBg,

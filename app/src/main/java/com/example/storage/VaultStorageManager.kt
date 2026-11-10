@@ -29,6 +29,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.security.SecureRandom
 import java.util.Arrays
@@ -37,6 +38,8 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 object VaultStorageManager {
@@ -242,7 +245,8 @@ object VaultStorageManager {
 
     suspend fun tryBlindUnlock(
         context: Context,
-        rawSequence: String
+        rawSequence: String,
+        canActivate: () -> Boolean = { true }
     ): VaultSessionManager.ActiveVaultSession? = withContext(Dispatchers.Default) {
         val trimmed = rawSequence.trim()
         if (trimmed.length !in 4..16) return@withContext null
@@ -252,11 +256,17 @@ object VaultStorageManager {
             val tree = resolveVaultTree(context)
             val headerFiles = listSpaceHeaderFiles(context)
             for (headerFile in headerFiles) {
+                currentCoroutineContext().ensureActive()
+                if (!canActivate()) return@withContext null
                 val info = VaultCryptoEngine.parseSpaceHeader(headerFile) ?: continue
-                val unlockedMk = VaultCryptoEngine.tryUnlockSpaceHeader(info, pinChars)
-                if (unlockedMk != null) {
+                val unlockedMk = VaultCryptoEngine.tryUnlockSpaceHeader(info, pinChars) ?: continue
+                var db: VaultDatabase? = null
+                var activated = false
+                try {
+                    currentCoroutineContext().ensureActive()
+                    if (!canActivate()) return@withContext null
                     val dbFile = File(tree.dbDir, "${info.spaceId}.db")
-                    val db = VaultDatabase.openSpaceDatabase(context, dbFile, unlockedMk)
+                    db = VaultDatabase.openSpaceDatabase(context, dbFile, unlockedMk)
                     val dao = db.vaultDao()
                     if (dao.getSpaceMetaSync() == null) {
                         dao.upsertSpaceMeta(
@@ -267,6 +277,8 @@ object VaultStorageManager {
                             )
                         )
                     }
+                    currentCoroutineContext().ensureActive()
+                    if (!canActivate()) return@withContext null
                     val session = VaultSessionManager.ActiveVaultSession(
                         spaceId = info.spaceId,
                         headerFile = headerFile,
@@ -275,7 +287,13 @@ object VaultStorageManager {
                         database = db
                     )
                     VaultSessionManager.activateSession(session)
+                    activated = true
                     return@withContext session
+                } finally {
+                    if (!activated) {
+                        runCatching { db?.close() }
+                        Arrays.fill(unlockedMk, 0.toByte())
+                    }
                 }
             }
             null
@@ -645,11 +663,14 @@ object VaultStorageManager {
     ): Result<String> = withContext(Dispatchers.IO) {
         val session = VaultSessionManager.activeSession.value
             ?: return@withContext Result.failure(IllegalStateException("Vault is locked"))
-        val masterKey = session.borrowMasterKeyCopy()
-        val tree = resolveVaultTree(context)
-        val blobFile = File(tree.blobsDir, fileEntity.blobFilename)
-
+        val masterKey = try {
+            session.borrowMasterKeyCopy()
+        } catch (e: Exception) {
+            return@withContext Result.failure(e)
+        }
         try {
+            val tree = resolveVaultTree(context)
+            val blobFile = File(tree.blobsDir, fileEntity.blobFilename)
             if (!blobFile.exists()) {
                 return@withContext Result.failure(IllegalStateException("Encrypted blob file missing"))
             }
@@ -664,14 +685,31 @@ object VaultStorageManager {
                 }
                 val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
                 val itemUri = resolver.insert(collection, contentValues)
-                if (itemUri != null) {
-                    resolver.openOutputStream(itemUri)?.use { out ->
+                    ?: throw IOException("Unable to create a Downloads entry")
+                try {
+                    resolver.openOutputStream(itemUri, "w")?.use { out ->
                         VaultCryptoEngine.decryptBlobFileToStream(masterKey, blobFile, out)
+                    } ?: throw IOException("Unable to open the Downloads file for writing")
+
+                    val publishValues = ContentValues().apply {
+                        put(MediaStore.Downloads.IS_PENDING, 0)
                     }
-                    contentValues.clear()
-                    contentValues.put(MediaStore.Downloads.IS_PENDING, 0)
-                    resolver.update(itemUri, contentValues, null, null)
-                    return@withContext Result.success("Download/XomeRestored/${fileEntity.originalName}")
+                    if (resolver.update(itemUri, publishValues, null, null) <= 0) {
+                        throw IOException("Unable to publish exported file in Downloads")
+                    }
+                    // MediaStore can rename duplicate names; report the actual saved name.
+                    val publishedName = runCatching {
+                        resolver.query(
+                            itemUri, arrayOf(MediaStore.Downloads.DISPLAY_NAME), null, null, null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) cursor.getString(0) else null
+                        }
+                    }.getOrNull() ?: fileEntity.originalName
+                    return@withContext Result.success("Download/XomeRestored/$publishedName")
+                } catch (e: Exception) {
+                    // Never leave a corrupt or invisible IS_PENDING plaintext export behind.
+                    runCatching { resolver.delete(itemUri, null, null) }
+                    throw e
                 }
             }
 

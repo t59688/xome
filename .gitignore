@@ -16,3 +16,11 @@
 local.properties
 .env
 debug.keystore
+
+# Android release signing, generated artifacts and local machines
+.env.android.local
+.android-signing/
+*.jks
+/artifacts/
+app/build/
+!gradle/wrapper/gradle-wrapper.jar

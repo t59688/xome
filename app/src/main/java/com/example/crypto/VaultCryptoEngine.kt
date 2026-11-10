@@ -73,8 +73,9 @@ object VaultCryptoEngine {
     /**
      * Derives a 256-bit Key Encryption Key (KEK) from a user PIN/Sequence CharArray
      * using Argon2id (RFC 9106).
-     * Automatically adapts memory if JVM heap is constrained in test/emulator environments
-     * while respecting the exact header parameter when possible.
+     * Uses the exact Argon2 parameters supplied by the caller. A space header persists
+     * these parameters, so silently adapting them during unlock would derive a different
+     * key and make a valid sequence appear incorrect.
      */
     fun deriveKekArgon2id(
         pinChars: CharArray,
@@ -87,11 +88,13 @@ object VaultCryptoEngine {
         val passwordBytes = charsToUtf8Bytes(pinChars)
         val kek = ByteArray(32)
         try {
-            val effectiveMemoryKb = resolveSafeArgon2MemoryKb(memoryCostKb)
+            require(memoryCostKb in 4096..262144) { "Invalid Argon2 memory cost" }
+            require(iterations in 1..32) { "Invalid Argon2 iteration count" }
+            require(parallelism in 1..16) { "Invalid Argon2 parallelism" }
             val params = Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
                 .withVersion(Argon2Parameters.ARGON2_VERSION_13)
                 .withSalt(salt)
-                .withMemoryAsKB(effectiveMemoryKb)
+                .withMemoryAsKB(memoryCostKb)
                 .withIterations(iterations)
                 .withParallelism(parallelism)
                 .build()
