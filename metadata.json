@@ -1,0 +1,6 @@
+{
+  "name": "Xome",
+  "description": "Disguised scientific calculator with multi-space Argon2id + AES-256-GCM envelope-encrypted private vault and in-memory streaming viewer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

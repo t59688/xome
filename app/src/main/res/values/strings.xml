@@ -1,0 +1,23 @@
+<resources>
+    <string name="app_name">Xome</string>
+    <string name="calc_title">Scientific Calculator</string>
+    <string name="calc_deg">DEG</string>
+    <string name="calc_rad">RAD</string>
+    <string name="calc_history_empty">No recent calculations</string>
+    <string name="onboarding_title">Initialize Primary Vault Space</string>
+    <string name="onboarding_subtitle">Set a 4–16 character secret sequence. Enter it in the calculator and press = to unlock.</string>
+    <string name="onboarding_pin_label">Unlock Sequence (e.g. 1314)</string>
+    <string name="onboarding_pin_confirm_label">Confirm Unlock Sequence</string>
+    <string name="onboarding_create_btn">Provision Argon2id + AES-256-GCM Vault</string>
+    <string name="vault_title">Encrypted Space</string>
+    <string name="vault_lock_now">Lock Vault</string>
+    <string name="vault_import_files">Import Files</string>
+    <string name="vault_import_photos">Import Media</string>
+    <string name="vault_new_folder">New Folder</string>
+    <string name="vault_settings">Security &amp; Spaces</string>
+    <string name="vault_empty_folder">This encrypted directory is empty</string>
+    <string name="vault_change_pin">Change Space Sequence (Zero Re-encryption)</string>
+    <string name="vault_create_decoy">Create Decoy / Secondary Space</string>
+    <string name="vault_root_warning">Root / Hook environment detected: System FLAG_SECURE screenshot protection may be bypassed by privileged processes.</string>
+    <string name="vault_root_clean">Environment Integrity Verified: Unrooted &amp; FLAG_SECURE Active</string>
+</resources>
