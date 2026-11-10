@@ -894,8 +894,8 @@ private fun FirstLaunchVaultSetupSheet(
     onRestoreArchive: () -> Unit
 ) {
     val strings = LocalAppStrings.current
-    var sequence by remember { mutableStateOf("1314") }
-    var confirmSequence by remember { mutableStateOf("1314") }
+    var sequence by remember { mutableStateOf("") }
+    var confirmSequence by remember { mutableStateOf("") }
     var spaceAlias by rememberSaveable { mutableStateOf(strings.defaultPrimarySpaceAlias) }
 
     LaunchedEffect(strings.language) {
@@ -961,34 +961,6 @@ private fun FirstLaunchVaultSetupSheet(
             style = MaterialTheme.typography.bodyMedium,
             color = CalcTextSecondary
         )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = strings.presetsLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = CalcTextMuted
-            )
-            listOf("1314", "9988+11", "2048*2").forEach { preset ->
-                FilterChip(
-                    selected = sequence == preset && confirmSequence == preset,
-                    onClick = {
-                        sequence = preset
-                        confirmSequence = preset
-                    },
-                    label = {
-                        Text(preset, style = MaterialTheme.typography.labelSmall)
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = VaultAccentPrimary.copy(alpha = 0.18f),
-                        selectedLabelColor = VaultAccentPrimary
-                    )
-                )
-            }
-        }
 
         OutlinedTextField(
             value = spaceAlias,

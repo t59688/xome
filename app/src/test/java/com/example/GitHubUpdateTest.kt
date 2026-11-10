@@ -12,6 +12,40 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class GitHubUpdateTest {
+    @Test fun `update prefers the first supported architecture over universal and other architectures`() {
+        val base = json()
+        val universalAsset = org.json.JSONObject(base).getJSONArray("assets").getJSONObject(2)
+        val root = org.json.JSONObject(base)
+        listOf("armeabi-v7a", "arm64-v8a", "x86_64").forEach { abi ->
+            root.getJSONArray("assets").put(org.json.JSONObject(universalAsset.toString()).apply {
+                val name = "xome-1.1.0-$abi-release.apk"
+                put("name", name)
+                put("browser_download_url", "https://github.com/t59688/xome/releases/download/v1.1.0/$name")
+            })
+        }
+        org.robolectric.util.ReflectionHelpers.setStaticField(android.os.Build::class.java,
+            "SUPPORTED_ABIS", arrayOf("arm64-v8a", "armeabi-v7a"))
+        val release = GitHubRelease.parse(root.toString())!!
+        assertEquals("xome-1.1.0-arm64-v8a-release.apk", release.assetName)
+        assertEquals(release, GitHubRelease.parse(release.toJson()))
+    }
+
+    @Test fun `incompatible architecture is never offered without a universal fallback`() {
+        org.robolectric.util.ReflectionHelpers.setStaticField(android.os.Build::class.java,
+            "SUPPORTED_ABIS", arrayOf("arm64-v8a", "armeabi-v7a"))
+        val incompatible = json().replace("xome-1.1.0-release.apk", "xome-1.1.0-x86_64-release.apk")
+        assertNull(GitHubRelease.parse(incompatible))
+        assertEquals("xome-1.1.0-release.apk", GitHubRelease.parse(json())!!.assetName)
+    }
+
+    @Test fun `architecture APK still requires the exact repository URL and a valid digest`() {
+        org.robolectric.util.ReflectionHelpers.setStaticField(android.os.Build::class.java,
+            "SUPPORTED_ABIS", arrayOf("arm64-v8a"))
+        val matching = json().replace("xome-1.1.0-release.apk", "xome-1.1.0-arm64-v8a-release.apk")
+        assertNotNull(GitHubRelease.parse(matching))
+        assertNull(GitHubRelease.parse(matching.replace("t59688/xome/releases/download", "other/repo/releases/download")))
+        assertNull(GitHubRelease.parse(matching.replace("\"digest\":null", "\"digest\":\"sha256:bad\"")))
+    }
     @Test fun `version comparison uses numeric components and beta order`() {
         assertTrue(ReleaseVersion.parse("v1.10.0")!! > ReleaseVersion.parse("1.9.9")!!)
         assertTrue(ReleaseVersion.parse("1.0.0")!! > ReleaseVersion.parse("1.0.0-beta.9")!!)

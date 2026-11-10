@@ -16,6 +16,19 @@
 - `scripts/capture_screenshots.py --serial emulator-5554 --name settings`：仅截取前台 Xome，不替用户输入解锁序列，遵守 Android FLAG_SECURE。
 - 只有在本机离线环境缺失 Android Lint 依赖时，才使用 `build-release.bat apk -Offline -SkipLint` 来诊断签名与打包。该产物**不能代替**完成完整 Lint 的正式 CI Release 验收。
 
+## Release 体积
+
+- Release 启用 R8 和资源裁剪，沿用 SQLCipher JNI 与 Room 的依赖保留规则；生成四种 ABI 的独立完整 APK，并保留 universal APK 供旧客户端和未知架构回退。
+- 本地脚本与 CI 按明确文件名收集五个 APK，禁止任取第一个 APK 当作通用包。通用包沿用 `xome-<版本>-release.apk`；架构包命名为 `xome-<版本>-<ABI>-release.apk`，可单独安装，无需配套其他 APK。
+- 新客户端按 `Build.SUPPORTED_ABIS` 的优先顺序选择对应架构包；未发布匹配包时使用通用包。仓库地址、摘要、版本和签名检查仍生效，缓存保留选中的资产名。
+- 精确排除未使用的 Bouncy Castle Picnic `*.bin.properties` 数据表，不排除 Argon2id、Blake2b 或 AES 代码。
+- 另排除不可达的 PKIXCertPathReviewer 对应提示文本，开启 release PNG crunch。内置 JPEG 已按展示用途缩放、以质量 82 重新编码；可用 Windows 脚本 `scripts/optimize-images.ps1` 生成预览，检查后加 `-Apply` 写入。脚本首次执行会将输入图备份到 `artifacts/image-originals/`，重复优化从备份生成，避免反复有损压缩。`artifacts/` 中的备份及预览目录不参与打包。
+- Release APK 同时压缩 DEX，进一步减少 GitHub 分发文件大小；安装时由系统处理代码解压与优化，因此下载体积不等于安装占用。此选项不改变从 AAB 生成 APK 的 DEX 打包方式。
+- APK 与 AAB 必须分别调用 Gradle：APK 使用 `assembleRelease -PsplitApks=true`，AAB 使用 `bundleRelease -PsplitApks=false`。本地 `all` 和 CI 已按此顺序执行，避免 AGP 资源裁剪器不支持多 APK 输出同时构建 AAB 的限制。单独调用 `bundleRelease` 时也默认关闭 ABI 拆包。
+- Release 原生库使用 `useLegacyPackaging=true` 压缩，安装器按设备 ABI 解压到原生库目录供 `System.loadLibrary` 使用。代价是安装时解压、保留提取后的库文件；不能把 APK 下载大小直接视为安装占用。Debug 打包方式不变。
+- 构建后核验 APK 中 `.so` 已压缩、合并清单 `extractNativeLibs=true`、四种 ABI 完整、解压后的库哈希与旧包一致，以及 release 签名有效；保存对应的 R8 `mapping.txt`。静态核验不能替代隔离设备上的加密数据库和 Argon2/AES 运行测试。
+- 配置依据：[AGP 原生库打包 API](https://developer.android.com/reference/tools/gradle-api/9.1/com/android/build/api/dsl/JniLibsPackaging) 与 [Android 安装器提取说明](https://developer.android.com/guide/topics/manifest/application-element#extractNativeLibs)。
+
 ## 永久签名
 
 1. 首次运行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-release-signing.ps1`。使用独立的 3072 位 RSA 签名密钥（非 PhonePulse 密钥）。

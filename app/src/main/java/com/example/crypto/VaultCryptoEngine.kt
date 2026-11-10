@@ -6,6 +6,8 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.SecureRandom
 import java.util.Arrays
 import javax.crypto.AEADBadTagException
@@ -109,21 +111,6 @@ object VaultCryptoEngine {
     }
 
     /**
-     * Ensures that if the Android JVM heap is smaller than 192MB (e.g., unit tests or low-RAM container),
-     * Argon2id uses a safe memory cap so it does not throw OutOfMemoryError, while using full 64MB
-     * when sufficient heap is available.
-     */
-    fun resolveSafeArgon2MemoryKb(requestedKb: Int): Int {
-        val runtime = Runtime.getRuntime()
-        val maxHeapBytes = runtime.maxMemory()
-        val usedBytes = runtime.totalMemory() - runtime.freeMemory()
-        val availableBytes = maxHeapBytes - usedBytes
-        // Need roughly 2x the Argon2 buffer size in free JVM heap to avoid OOM during block allocation
-        val maxSafeKb = ((availableBytes / (1024 * 3)).toInt()).coerceAtLeast(4096)
-        return requestedKb.coerceAtMost(maxSafeKb)
-    }
-
-    /**
      * Creates a new 128-byte Space Envelope Header (.header) wrapping the provided 256-bit MasterKey.
      * Note: Does NOT wipe [masterKey] so caller can continue using it; caller must wipe [pinChars].
      */
@@ -138,7 +125,8 @@ object VaultCryptoEngine {
         val salt = randomBytes(16)
         val mkNonce = randomBytes(12)
         val reserved = randomBytes(32)
-        val effectiveMemoryKb = resolveSafeArgon2MemoryKb(memoryCostKb)
+        // Persist the requested work factor; memory pressure must not silently weaken new vaults.
+        val effectiveMemoryKb = memoryCostKb
 
         val kek = deriveKekArgon2id(
             pinChars = pinChars,
@@ -260,6 +248,7 @@ object VaultCryptoEngine {
         oldPinChars: CharArray,
         newPinChars: CharArray
     ): Boolean {
+        if (!VaultSequencePolicy.isValidNewSequence(java.nio.CharBuffer.wrap(newPinChars))) return false
         val headerInfo = parseSpaceHeader(headerFile) ?: return false
         val mk = tryUnlockSpaceHeader(headerInfo, oldPinChars) ?: return false
         return try {
@@ -267,13 +256,21 @@ object VaultCryptoEngine {
                 pinChars = newPinChars,
                 masterKey = mk,
                 memoryCostKb = DEFAULT_ARGON2_MEMORY_KB,
-                timeCost = headerInfo.timeCost,
-                parallelism = headerInfo.parallelism
+                timeCost = maxOf(headerInfo.timeCost, DEFAULT_ARGON2_ITERATIONS),
+                parallelism = DEFAULT_ARGON2_PARALLELISM
             )
-            FileOutputStream(headerFile).use { fos ->
-                fos.write(newHeaderBytes)
-                fos.flush()
-                fos.fd.sync()
+            val pending = File.createTempFile(".rotate-", ".tmp", headerFile.absoluteFile.parentFile)
+            try {
+                FileOutputStream(pending).use { fos ->
+                    fos.write(newHeaderBytes)
+                    fos.flush()
+                    fos.fd.sync()
+                }
+                // A failed/unsupported atomic replacement leaves the existing header usable.
+                Files.move(pending.toPath(), headerFile.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } finally {
+                pending.delete()
             }
             true
         } finally {

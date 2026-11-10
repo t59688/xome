@@ -1,5 +1,6 @@
 package com.example.update
 
+import android.os.Build
 import org.json.JSONObject
 import java.net.URI
 
@@ -54,20 +55,24 @@ data class GitHubRelease(
             if (version.beta != null && channel != UpdateChannel.BETA) return null
             if (root.optBoolean("prerelease") != (version.beta != null)) return null
             val assets = root.optJSONArray("assets") ?: return null
-            val expectedName = "xome-${version.name}-release.apk"
-            for (index in 0 until assets.length()) {
-                val asset = assets.optJSONObject(index) ?: continue
-                if (asset.optString("name") != expectedName) continue
-                val url = asset.optString("browser_download_url")
-                val uri = runCatching { URI(url) }.getOrNull() ?: continue
-                if (uri.scheme != "https" || uri.host != "github.com" || uri.userInfo != null || uri.port != -1 ||
-                    uri.path != "/$REPOSITORY/releases/download/${root.optString("tag_name")}/$expectedName") continue
-                val size = asset.optLong("size")
-                if (size <= 0) continue
-                val digest = asset.optString("digest").takeIf { it.isNotBlank() && it != "null" }
-                if (digest != null && !Regex("sha256:[0-9a-fA-F]{64}").matches(digest)) return null
-                return GitHubRelease(version, root.optString("name", version.name), root.optString("body"),
-                    expectedName, url, size, digest?.substringAfter(':')?.lowercase())
+            val knownAbis = setOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            val expectedNames = Build.SUPPORTED_ABIS.filter { it in knownAbis }.distinct()
+                .map { "xome-${version.name}-$it-release.apk" } + "xome-${version.name}-release.apk"
+            for (expectedName in expectedNames) {
+                for (index in 0 until assets.length()) {
+                    val asset = assets.optJSONObject(index) ?: continue
+                    if (asset.optString("name") != expectedName) continue
+                    val url = asset.optString("browser_download_url")
+                    val uri = runCatching { URI(url) }.getOrNull() ?: continue
+                    if (uri.scheme != "https" || uri.host != "github.com" || uri.userInfo != null || uri.port != -1 ||
+                        uri.path != "/$REPOSITORY/releases/download/${root.optString("tag_name")}/$expectedName") continue
+                    val size = asset.optLong("size")
+                    if (size <= 0) continue
+                    val digest = asset.optString("digest").takeIf { it.isNotBlank() && it != "null" }
+                    if (digest != null && !Regex("sha256:[0-9a-fA-F]{64}").matches(digest)) return null
+                    return GitHubRelease(version, root.optString("name", version.name), root.optString("body"),
+                        expectedName, url, size, digest?.substringAfter(':')?.lowercase())
+                }
             }
             return null
         }

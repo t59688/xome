@@ -48,19 +48,21 @@ if (-not $version) { throw 'VERSION file is empty.' }
 $env:VERSION_NAME = $version
 
 $gradlew = Join-Path $projectRoot 'gradlew.bat'
-$tasks = @()
-if ($Format -eq 'apk' -or $Format -eq 'all') { $tasks += ':app:assembleRelease' }
-if ($Format -eq 'aab' -or $Format -eq 'all') { $tasks += ':app:bundleRelease' }
-
 Write-Host "Building Xome $version ($Format)..."
-$gradleArgs = @($tasks) + @('--no-daemon', '--stacktrace')
+$gradleArgs = @('--no-daemon', '--stacktrace')
 if ($Offline) { $gradleArgs += '--offline' }
 if ($SkipLint) {
   Write-Warning 'Local diagnostic build: Android release lint is skipped; CI release still runs it.'
   $gradleArgs += @('-x', ':app:lintVitalAnalyzeRelease', '-x', ':app:lintVitalReportRelease', '-x', ':app:lintVitalRelease')
 }
-& $gradlew @gradleArgs
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($Format -eq 'apk' -or $Format -eq 'all') {
+  & $gradlew ':app:assembleRelease' '-PsplitApks=true' @gradleArgs
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+if ($Format -eq 'aab' -or $Format -eq 'all') {
+  & $gradlew ':app:bundleRelease' '-PsplitApks=false' @gradleArgs
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 
 $outDir = Join-Path $projectRoot 'artifacts\android'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
@@ -81,10 +83,14 @@ function Copy-NamedArtifact {
 }
 
 if ($Format -eq 'apk' -or $Format -eq 'all') {
-  Copy-NamedArtifact `
-    -SearchRoot (Join-Path $projectRoot 'app\build\outputs\apk\release') `
-    -Filter '*.apk' `
-    -DestName "xome-$version-release.apk"
+  foreach ($abi in @('universal', 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64')) {
+    $src = Join-Path $projectRoot "app\build\outputs\apk\release\app-$abi-release.apk"
+    if (-not (Test-Path -LiteralPath $src)) { throw "Build output not found: $src" }
+    $destName = if ($abi -eq 'universal') { "xome-$version-release.apk" } else { "xome-$version-$abi-release.apk" }
+    $dest = Join-Path $outDir $destName
+    Write-Host "-> $dest"
+    Copy-Item -LiteralPath $src -Destination $dest -Force
+  }
 }
 if ($Format -eq 'aab' -or $Format -eq 'all') {
   Copy-NamedArtifact `

@@ -25,18 +25,13 @@ abstract class VaultDatabase : RoomDatabase() {
         @Volatile
         private var sqlCipherLoaded = false
 
-        private fun ensureSqlCipherLoaded(): Boolean {
-            if (sqlCipherLoaded) return true
-            return try {
+        private fun ensureSqlCipherLoaded() {
+            if (sqlCipherLoaded) return
+            try {
                 System.loadLibrary("sqlcipher")
                 sqlCipherLoaded = true
-                true
-            } catch (_: UnsatisfiedLinkError) {
-                // On JVM Robolectric unit tests where native libsqlcipher.so isn't packaged for host Linux x86_64,
-                // fallback to standard SQLite driver so JVM tests can still run cleanly.
-                false
-            } catch (_: Throwable) {
-                false
+            } catch (e: LinkageError) {
+                throw IllegalStateException("Encrypted database unavailable: SQLCipher could not be loaded", e)
             }
         }
 
@@ -49,6 +44,7 @@ abstract class VaultDatabase : RoomDatabase() {
             dbFile: File,
             masterKey: ByteArray
         ): VaultDatabase {
+            ensureSqlCipherLoaded()
             dbFile.parentFile?.mkdirs()
             val dbKeyBytes = VaultCryptoEngine.deriveDatabaseKeyFromMasterKey(masterKey)
             return try {
@@ -56,13 +52,9 @@ abstract class VaultDatabase : RoomDatabase() {
                     context.applicationContext,
                     VaultDatabase::class.java,
                     dbFile.absolutePath
-                ).fallbackToDestructiveMigration()
-
-                if (ensureSqlCipherLoaded()) {
-                    // Pass a copy of dbKeyBytes to SQLCipher SupportOpenHelperFactory
-                    val factory = SupportOpenHelperFactory(dbKeyBytes.copyOf())
-                    builder.openHelperFactory(factory)
-                }
+                )
+                val factory = SupportOpenHelperFactory(dbKeyBytes.copyOf())
+                builder.openHelperFactory(factory)
                 builder.build()
             } finally {
                 Arrays.fill(dbKeyBytes, 0.toByte())

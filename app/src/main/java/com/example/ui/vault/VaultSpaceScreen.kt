@@ -173,13 +173,16 @@ fun VaultSpaceScreen(
     onShredFile: (VaultFileEntity) -> Unit,
     onRenameFile: (VaultFileEntity, String) -> Unit,
     onChangeSequence: (String, String, String, (Boolean, String) -> Unit) -> Unit,
-    onCreateDecoySpace: (String, String, String, Boolean, Boolean, (Boolean, String) -> Unit) -> Unit,
+    onVerifyCurrentSequence: (String, (Boolean) -> Unit) -> Unit,
+    onCreateDecoySpace: (String, String, String, Boolean, Boolean, Boolean, (Boolean, String) -> Unit) -> Unit,
     onExportSelfHealingArchive: (android.net.Uri) -> Unit,
     onImportSelfHealingArchive: (android.net.Uri) -> Unit,
     onLockVault: () -> Unit,
     onDismissBanner: () -> Unit,
     onExternalActivityStarted: () -> Unit,
-    onExternalActivityFinished: () -> Unit
+    onExternalActivityFinished: () -> Unit,
+    pendingSourceReselect: VaultStorageManager.DeletableSourceHandle? = null,
+    onSourceReselected: (android.net.Uri?) -> Unit = {}
 ) {
     val strings = LocalAppStrings.current
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
@@ -207,12 +210,66 @@ fun VaultSpaceScreen(
     }
 
     val safDocumentsLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments()
+        contract = object : ActivityResultContracts.OpenMultipleDocuments() {
+            override fun createIntent(context: android.content.Context, input: Array<String>) =
+                super.createIntent(context, input).addFlags(
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+        }
     ) { uris ->
         onExternalActivityFinished()
         if (uris.isNotEmpty()) {
             onImportUris(uris, isMoveAndWipeMode)
         }
+    }
+
+    val sourceReselectLauncher = rememberLauncherForActivityResult(
+        contract = object : androidx.activity.result.contract.ActivityResultContract<android.net.Uri, android.net.Uri?>() {
+            override fun createIntent(context: android.content.Context, input: android.net.Uri) =
+                android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT)
+                    .addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                    .setType("*/*")
+                    .putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, input)
+                    .addFlags(
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            override fun parseResult(resultCode: Int, intent: android.content.Intent?): android.net.Uri? =
+                if (resultCode == Activity.RESULT_OK) intent?.data else null
+        }
+    ) { uri ->
+        onExternalActivityFinished()
+        onSourceReselected(uri)
+    }
+
+    if (pendingSourceReselect != null) {
+        val zh = strings.language == AppLanguage.ZH
+        AlertDialog(
+            onDismissRequest = { onSourceReselected(null) },
+            title = { Text(if (zh) "授权删除原文件" else "Original file permission") },
+            text = {
+                Text(if (zh) "尚未确认删除：${pendingSourceReselect.displayName}\n\n" +
+                    "请在系统文件中重新选择同一个原文件以授权删除，不要选择同名副本。云端或只读文件可能需要在原应用中手动删除。\n\n加密副本已保存，无需所有文件访问权限。"
+                    else "Deletion unconfirmed: ${pendingSourceReselect.displayName}\n\n" +
+                        "Reselect this exact original in Files to grant deletion. A same-name copy is not the original. Cloud or read-only sources may require deletion in their own app.\n\nEncrypted copy saved; no all-files permission needed.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    try {
+                        sourceReselectLauncher.launchWithVaultGuard(
+                            pendingSourceReselect.originalUri,
+                            onExternalActivityStarted, onExternalActivityFinished
+                        )
+                    } catch (_: Exception) {
+                        onSourceReselected(null)
+                    }
+                }) { Text(if (zh) "选择原文件" else "Select original") }
+            },
+            dismissButton = {
+                TextButton(onClick = { onSourceReselected(null) }) { Text(if (zh) "保留原文件" else "Keep originals") }
+            }
+        )
     }
 
     val systemDeleteIntentLauncher = rememberLauncherForActivityResult(
@@ -483,6 +540,7 @@ fun VaultSpaceScreen(
                     onToggleFlagSecure = onToggleFlagSecure,
                     onSelectLanguage = onSelectLanguage,
                     onChangeSequence = onChangeSequence,
+                    onVerifyCurrentSequence = onVerifyCurrentSequence,
                     onCreateDecoySpace = onCreateDecoySpace,
                     onExportSelfHealingArchive = {
                         exportArchiveLauncher.launchWithVaultGuard(
