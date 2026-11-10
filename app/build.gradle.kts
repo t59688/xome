@@ -70,8 +70,9 @@ android {
 
   buildTypes {
     release {
-      isCrunchPngs = false
-      isMinifyEnabled = false
+      isCrunchPngs = true
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
@@ -83,6 +84,19 @@ android {
       signingConfig = signingConfigs.getByName("debugConfig")
     }
   }
+  splits {
+    abi {
+      // AGP's resource shrinker requires a single output when building an AAB.
+      isEnable = providers.gradleProperty("splitApks").map { it.toBooleanStrict() }.getOrElse(
+        gradle.startParameter.taskNames.none { it.contains("bundle", ignoreCase = true) }
+      )
+      reset()
+      include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+      isUniversalApk = true
+    }
+  }
+  packaging.resources.excludes += "org/bouncycastle/pqc/crypto/picnic/*.bin.properties"
+  packaging.resources.excludes += "org/bouncycastle/x509/CertPathReviewerMessages*.properties"
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
@@ -95,6 +109,15 @@ android {
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
+  }
+}
+
+androidComponents {
+  onVariants(selector().withBuildType("release")) { variant ->
+    // Reduce universal APK downloads; Android extracts the matching ABI at install time.
+    variant.packaging.jniLibs.useLegacyPackaging.set(true)
+    variant.packaging.jniLibs.useLegacyPackagingFromBundle.set(true)
+    variant.packaging.dex.useLegacyPackaging.set(true)
   }
 }
 

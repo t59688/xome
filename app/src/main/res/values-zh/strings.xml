@@ -5,8 +5,8 @@
     <string name="calc_rad">弧度</string>
     <string name="calc_history_empty">暂无计算记录</string>
     <string name="onboarding_title">初始化主加密空间</string>
-    <string name="onboarding_subtitle">设置 4–16 位触发序列，在计算器输入该序列并按 = 键即可解锁。</string>
-    <string name="onboarding_pin_label">解锁序列（如 1314）</string>
+    <string name="onboarding_subtitle">设置 6–16 位解锁序列，必须同时包含数字与计算器符号。输入该序列并按 = 键即可解锁。</string>
+    <string name="onboarding_pin_label">解锁序列（数字与符号）</string>
     <string name="onboarding_pin_confirm_label">确认解锁序列</string>
     <string name="onboarding_create_btn">创建 Argon2id + AES-256-GCM 加密空间</string>
     <string name="vault_title">私密加密空间</string>

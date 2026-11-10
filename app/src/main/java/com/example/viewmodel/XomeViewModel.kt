@@ -11,6 +11,8 @@ import com.example.crypto.RandomAccessDecryptedStream
 import com.example.crypto.RootSecurityDetector
 import com.example.crypto.VaultCryptoEngine
 import com.example.crypto.VaultSessionManager
+import com.example.crypto.VaultSequencePolicy
+import com.example.crypto.VaultUnlockThrottle
 import com.example.data.VaultFileEntity
 import com.example.data.VaultFolderEntity
 import com.example.data.VaultSpaceMetaEntity
@@ -104,6 +106,9 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     private val hiddenUnlockEpoch = AtomicLong(0L)
     private var hiddenUnlockJob: Job? = null
     private val hiddenUnlockMutex = Mutex()
+    private val unlockThrottle = VaultUnlockThrottle(
+        appContext.getSharedPreferences("xome_unlock_throttle", android.content.Context.MODE_PRIVATE)
+    )
 
     private fun invalidateHiddenUnlock() {
         hiddenUnlockEpoch.incrementAndGet()
@@ -137,7 +142,12 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     val pendingSystemDeleteIntent: StateFlow<IntentSender?> =
         _pendingSystemDeleteIntent.asStateFlow()
 
-    private var pendingSystemDeleteCount: Int = 0
+    private var systemDeleteHandles = emptyList<VaultStorageManager.DeletableSourceHandle>()
+    private var unresolvedDeleteHandles = emptyList<VaultStorageManager.DeletableSourceHandle>()
+    private val reselectAttemptedUris = mutableSetOf<Uri>()
+    private var verifiedDeletedCount = 0
+    private val _pendingSourceReselect = MutableStateFlow<VaultStorageManager.DeletableSourceHandle?>(null)
+    val pendingSourceReselect = _pendingSourceReselect.asStateFlow()
 
     private val _statusBanner = MutableStateFlow<StatusBanner?>(null)
     val statusBanner: StateFlow<StatusBanner?> = _statusBanner.asStateFlow()
@@ -242,6 +252,11 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     _activeDocumentViewerFile.value = null
                     _decryptedDocumentText.value = null
                     _pendingDeleteConfirmation.value = emptyList()
+                    _pendingSourceReselect.value = null
+                    _pendingSystemDeleteIntent.value = null
+                    systemDeleteHandles = emptyList()
+                    unresolvedDeleteHandles = emptyList()
+                    reselectAttemptedUris.clear()
                 } else {
                     withContext(Dispatchers.IO) {
                         _totalProvisionedSpaces.value =
@@ -303,14 +318,14 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         spaceAlias: String = "Main Space",
         enterCalculatorFirst: Boolean = false
     ) {
-        val cleanSeq = rawSequence.trim()
-        val cleanConfirm = confirmSequence.trim()
+        val cleanSeq = VaultSequencePolicy.normalize(rawSequence)
+        val cleanConfirm = VaultSequencePolicy.normalize(confirmSequence)
 
-        if (cleanSeq.length !in 4..16) {
+        if (!VaultSequencePolicy.isValidNewSequence(cleanSeq)) {
             _onboardingError.value = if (isZh()) {
-                "解锁序列需为 4 至 16 位字符（如 1314 或 9988+11）"
+                "解锁序列需为 6 至 16 位，且同时包含数字与计算器符号"
             } else {
-                "Sequence must be 4 to 16 characters (e.g. 1314 or 9988+11)."
+                "Use 6–16 characters combining digits and calculator symbols."
             }
             return
         }
@@ -341,8 +356,8 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     showBanner(if (isZh()) "私密空间已创建" else "Private space created")
                 } else {
                     showBanner(
-                        if (isZh()) "设置完成，输入 $cleanSeq= 即可进入"
-                        else "Setup complete. Type $cleanSeq= to unlock."
+                        if (isZh()) "设置完成，输入你的解锁序列并按等号即可进入"
+                        else "Setup complete. Enter your sequence followed by equals to unlock."
                     )
                 }
             } catch (e: Exception) {
@@ -436,15 +451,11 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         val rawExpr = current.expression.trim()
         if (rawExpr.isEmpty()) return
         invalidateHiddenUnlock()
-        // Render a normal calculator result immediately; checking runs unobtrusively.
-        performNormalMathEvaluation(rawExpr)
-
-        val normalizedCandidate = rawExpr
-            .replace("−", "-")
-            .replace("×", "*")
-            .replace("÷", "/")
-
-        if (normalizedCandidate.length !in 4..16) return
+        val normalizedCandidate = VaultSequencePolicy.normalize(rawExpr)
+        val couldBeCredential = VaultSequencePolicy.isValidLegacySequence(normalizedCandidate)
+        // Do not expose a candidate in history while verification is pending.
+        performNormalMathEvaluation(rawExpr, recordHistory = !couldBeCredential)
+        if (!couldBeCredential) return
 
         val attemptEpoch = hiddenUnlockEpoch.get()
         hiddenUnlockJob = viewModelScope.launch {
@@ -455,30 +466,11 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     if (hiddenUnlockEpoch.get() != attemptEpoch) return@launch
-                    if (!hasSpaces && normalizedCandidate == "1314") {
-                        val pinChars = "1314".toCharArray()
-                        try {
-                            VaultStorageManager.provisionNewSpace(
-                                context = appContext,
-                                pinChars = pinChars,
-                                spaceAlias = if (isZh()) "主空间" else "Main Space",
-                                isDecoy = false,
-                                seedSampleFiles = true,
-                                activateImmediately = true
-                            )
-                            refreshSelfHealingStatus()
-                            _calcState.value = _calcState.value.copy(
-                                expression = "",
-                                livePreview = "",
-                                lastResult = ""
-                            )
-                            return@launch
-                        } finally {
-                            Arrays.fill(pinChars, '\u0000')
-                        }
+                    if (!hasSpaces) {
+                        recordCalculation(rawExpr)
+                        return@launch
                     }
-
-                    if (!hasSpaces) return@launch
+                    if (!withContext(Dispatchers.IO) { unlockThrottle.tryAcquire() }) return@launch
 
                     val canActivate = { hiddenUnlockEpoch.get() == attemptEpoch }
                     if (!canActivate()) return@launch
@@ -493,11 +485,16 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     if (unlockedSession != null && canActivate()) {
+                        withContext(Dispatchers.IO) { unlockThrottle.onSuccess() }
                         _calcState.value = _calcState.value.copy(
                             expression = "",
                             livePreview = "",
-                            lastResult = ""
+                            lastResult = "",
+                            history = emptyList(),
+                            isHistoryVisible = false
                         )
+                    } else if (canActivate()) {
+                        recordCalculation(rawExpr)
                     }
                 } catch (e: CancellationException) {
                     throw e
@@ -508,7 +505,16 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun performNormalMathEvaluation(rawExpr: String) {
+    private fun recordCalculation(rawExpr: String) {
+        val current = _calcState.value
+        val result = ScientificCalculatorEngine.evaluateExpression(rawExpr, current.isDegreeMode).getOrNull()
+            ?: return
+        _calcState.value = current.copy(history = (listOf(
+            ScientificCalculatorEngine.CalcHistoryEntry(expression = rawExpr, result = ScientificCalculatorEngine.formatNumber(result))
+        ) + current.history).take(30))
+    }
+
+    private fun performNormalMathEvaluation(rawExpr: String, recordHistory: Boolean = true) {
         val current = _calcState.value
         val evalResult = ScientificCalculatorEngine.evaluateExpression(rawExpr, current.isDegreeMode)
         evalResult.fold(
@@ -519,7 +525,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                         expression = rawExpr,
                         result = formatted
                     )
-                ) + current.history).take(30)
+                ) + current.history).take(30).takeIf { recordHistory } ?: current.history
 
                 _calcState.value = current.copy(
                     expression = formatted,
@@ -663,33 +669,72 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
      * Invoked when the user confirms deleting the original files in the post-import dialog.
      */
     fun confirmDeleteOriginalFiles() {
+        val session = activeSession.value ?: return
         val handles = _pendingDeleteConfirmation.value
         _pendingDeleteConfirmation.value = emptyList()
         if (handles.isEmpty()) return
-
+        verifiedDeletedCount = 0
+        unresolvedDeleteHandles = emptyList()
+        reselectAttemptedUris.clear()
         viewModelScope.launch {
-            val outcome = VaultStorageManager.executeConfirmedOriginalDeletion(
-                context = appContext,
-                handles = handles
-            )
-            if (outcome.pendingSystemDeleteIntentSender != null) {
-                pendingSystemDeleteCount = handles.size - outcome.deletedImmediatelyCount
-                _pendingSystemDeleteIntent.value = outcome.pendingSystemDeleteIntentSender
-            } else {
-                val totalDeleted = outcome.deletedImmediatelyCount
-                if (totalDeleted > 0) {
-                    showBanner(
-                        if (isZh()) "已加密导入并删除 $totalDeleted 个原文件"
-                        else "Encrypted and deleted $totalDeleted original file(s)"
-                    )
-                } else {
-                    showBanner(
-                        if (isZh()) "原文件受系统权限保护，请通过文档选择器授权删除"
-                        else "Original file is read-only; select via Documents picker to allow deletion",
-                        isError = true
-                    )
-                }
+            val outcome = VaultStorageManager.executeConfirmedOriginalDeletion(appContext, handles)
+            if (activeSession.value === session) acceptDeletionOutcome(outcome)
+        }
+    }
+
+    private fun acceptDeletionOutcome(outcome: VaultStorageManager.SourceDeletionOutcome, guideReselect: Boolean = true) {
+        verifiedDeletedCount += outcome.deletedImmediatelyCount
+        unresolvedDeleteHandles = (unresolvedDeleteHandles + outcome.unresolvedHandles)
+            .distinctBy { it.originalUri }
+        systemDeleteHandles = outcome.pendingHandles
+        _pendingSystemDeleteIntent.value = outcome.pendingSystemDeleteIntentSender
+        if (outcome.pendingSystemDeleteIntentSender == null) {
+            _pendingSourceReselect.value = if (guideReselect) unresolvedDeleteHandles.firstOrNull {
+                it.originalUri !in reselectAttemptedUris && VaultStorageManager.canReselectOriginal(appContext, it)
+            } else null
+            reportOriginalDeletion()
+        }
+    }
+
+    private fun reportOriginalDeletion() {
+        val remaining = unresolvedDeleteHandles.size
+        showBanner(
+            if (isZh()) "已验证删除 $verifiedDeletedCount 个原文件；$remaining 个未确认删除，加密副本已保存" +
+                (if (remaining > 0) "。可在来源应用检查并手动删除原文件" else "")
+            else "Verified $verifiedDeletedCount original(s) deleted; $remaining unconfirmed. Encrypted copies saved" +
+                (if (remaining > 0) ". Check and delete originals in their source app if needed" else ""),
+            isError = remaining > 0
+        )
+    }
+
+    fun onSourceReselected(uri: Uri?) {
+        val session = activeSession.value ?: return
+        val handle = _pendingSourceReselect.value ?: return
+        _pendingSourceReselect.value = null
+        if (uri == null) {
+            reportOriginalDeletion()
+            return
+        }
+        viewModelScope.launch {
+            val same = withContext(Dispatchers.IO) {
+                VaultStorageManager.isSameOriginal(appContext, handle, uri)
             }
+            if (activeSession.value !== session) return@launch
+            if (!same) {
+                showBanner(
+                    if (isZh()) "无法确认是同一原文件，未删除。请重选原文件；云端提供方可能不支持删除"
+                    else "Cannot verify the same original; nothing deleted. Reselect the original; cloud providers may not support deletion",
+                    isError = true
+                )
+                _pendingSourceReselect.value = handle
+                return@launch
+            }
+            unresolvedDeleteHandles = unresolvedDeleteHandles.filterNot { it.originalUri == handle.originalUri }
+            reselectAttemptedUris.add(handle.originalUri)
+            reselectAttemptedUris.add(uri)
+            val granted = handle.copy(originalUri = uri)
+            val outcome = VaultStorageManager.executeConfirmedOriginalDeletion(appContext, listOf(granted))
+            if (activeSession.value === session) acceptDeletionOutcome(outcome)
         }
     }
 
@@ -711,19 +756,19 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
      * Callback after Android's `MediaStore.createDeleteRequest` system sheet finishes.
      */
     fun onSystemDeleteIntentCompleted(approved: Boolean) {
+        val session = activeSession.value ?: return
+        val handles = systemDeleteHandles
+        systemDeleteHandles = emptyList()
         _pendingSystemDeleteIntent.value = null
-        val count = pendingSystemDeleteCount.coerceAtLeast(1)
-        pendingSystemDeleteCount = 0
-        if (approved) {
-            showBanner(
-                if (isZh()) "已成功删除 $count 个系统原文件"
-                else "Deleted $count original file(s)"
-            )
-        } else {
-            showBanner(
-                if (isZh()) "已取消删除原文件，加密副本已安全保存"
-                else "Original file deletion cancelled; encrypted copy saved"
-            )
+        if (handles.isEmpty()) return
+        viewModelScope.launch {
+            // RESULT_OK alone never proves deletion. Android 10 grants permission only.
+            val outcome = if (approved && Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+                VaultStorageManager.executeConfirmedOriginalDeletion(appContext, handles)
+            } else {
+                VaultStorageManager.verifyOriginalDeletion(appContext, handles)
+            }
+            if (activeSession.value === session) acceptDeletionOutcome(outcome, guideReselect = approved)
         }
     }
 
@@ -906,11 +951,13 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             val chars = sequence.trim().toCharArray()
+            val normalizedChars = VaultSequencePolicy.normalize(sequence).toCharArray()
             val valid = try {
                 withContext(Dispatchers.Default) {
                     val header = VaultCryptoEngine.parseSpaceHeader(currentSession.headerFile)
                         ?: return@withContext false
-                    val unwrapped = VaultCryptoEngine.tryUnlockSpaceHeader(header, chars)
+                    val unwrapped = VaultCryptoEngine.tryUnlockSpaceHeader(header, normalizedChars)
+                        ?: (if (!chars.contentEquals(normalizedChars)) VaultCryptoEngine.tryUnlockSpaceHeader(header, chars) else null)
                         ?: return@withContext false
                     try {
                         val currentKey = currentSession.borrowMasterKeyCopy()
@@ -929,6 +976,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 false
             } finally {
                 Arrays.fill(chars, '\u0000')
+                Arrays.fill(normalizedChars, '\u0000')
             }
             onComplete(valid && activeSession.value === currentSession)
         }
@@ -945,13 +993,13 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val cleanOld = oldSequence.trim()
-        val cleanNew = newSequence.trim()
-        val cleanConfirm = confirmSequence.trim()
+        val cleanNew = VaultSequencePolicy.normalize(newSequence)
+        val cleanConfirm = VaultSequencePolicy.normalize(confirmSequence)
 
-        if (cleanNew.length !in 4..16) {
+        if (!VaultSequencePolicy.isValidNewSequence(cleanNew)) {
             onComplete(
                 false,
-                if (isZh()) "新序列需为 4 至 16 位字符" else "New sequence must be 4 to 16 characters."
+                if (isZh()) "新序列需为 6 至 16 位，且同时包含数字与计算器符号" else "Use 6–16 characters combining digits and calculator symbols."
             )
             return
         }
@@ -966,6 +1014,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val startMs = System.currentTimeMillis()
             val oldChars = cleanOld.toCharArray()
+            val normalizedOldChars = VaultSequencePolicy.normalize(cleanOld).toCharArray()
             val newChars = cleanNew.toCharArray()
             try {
                 val usedElsewhere = withContext(Dispatchers.Default) {
@@ -984,7 +1033,8 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                         headerFile = session.headerFile,
                         oldPinChars = oldChars,
                         newPinChars = newChars
-                    )
+                    ) || (!oldChars.contentEquals(normalizedOldChars) &&
+                        VaultCryptoEngine.changeSpacePinZeroReencryption(session.headerFile, normalizedOldChars, newChars))
                 }
                 val elapsed = System.currentTimeMillis() - startMs
                 if (ok) {
@@ -1007,6 +1057,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 onComplete(false, if (isZh()) "修改失败，请重试" else "Could not update the sequence. Try again.")
             } finally {
                 Arrays.fill(oldChars, '\u0000')
+                Arrays.fill(normalizedOldChars, '\u0000')
                 Arrays.fill(newChars, '\u0000')
             }
         }
@@ -1021,13 +1072,13 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         switchToNewSpaceImmediately: Boolean = false,
         onComplete: (Boolean, String) -> Unit
     ) {
-        val cleanSeq = newSequence.trim()
-        val cleanConfirm = confirmSequence.trim()
+        val cleanSeq = VaultSequencePolicy.normalize(newSequence)
+        val cleanConfirm = VaultSequencePolicy.normalize(confirmSequence)
 
-        if (cleanSeq.length !in 4..16) {
+        if (!VaultSequencePolicy.isValidNewSequence(cleanSeq)) {
             onComplete(
                 false,
-                if (isZh()) "解锁序列需为 4 至 16 位字符" else "Sequence must be 4 to 16 characters."
+                if (isZh()) "解锁序列需为 6 至 16 位，且同时包含数字与计算器符号" else "Use 6–16 characters combining digits and calculator symbols."
             )
             return
         }

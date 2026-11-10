@@ -83,6 +83,11 @@ class VaultSecurityWizardUiTest {
         compose.onNodeWithTag("create_space_sequence").performTextInput("ab12")
         compose.onNodeWithTag("wizard_primary").assertIsNotEnabled()
         compose.onNodeWithTag("create_space_confirmation").performTextInput("ab12")
+        compose.onNodeWithTag("wizard_primary").assertIsNotEnabled()
+        compose.onNodeWithTag("create_space_sequence").performTextClearance()
+        compose.onNodeWithTag("create_space_confirmation").performTextClearance()
+        compose.onNodeWithTag("create_space_sequence").performTextInput("2345+6")
+        compose.onNodeWithTag("create_space_confirmation").performTextInput("2345+6")
         compose.onNodeWithTag("wizard_primary").assertIsEnabled()
         compose.onNodeWithTag("wizard_primary").performClick()
 
@@ -99,7 +104,7 @@ class VaultSecurityWizardUiTest {
         assertTrue(completed)
         assertFalse(capturedSeed)
         assertEquals("访客空间", capturedAlias)
-        assertEquals("ab12", capturedSequence)
+        assertEquals("2345+6", capturedSequence)
         compose.onNodeWithText("新空间已创建").assertIsDisplayed()
         compose.onNodeWithText("上一步").assertDoesNotExist()
     }
@@ -117,7 +122,7 @@ class VaultSecurityWizardUiTest {
                     },
                     onChange = { old, next, repeated, cb ->
                         assertEquals("old1", old)
-                        assertEquals("new2", next)
+                        assertEquals("7890+1", next)
                         assertEquals(next, repeated)
                         didChange = true
                         cb(true, "updated")
@@ -139,8 +144,8 @@ class VaultSecurityWizardUiTest {
         compose.onNodeWithTag("wizard_primary").performClick()
         assertEquals(2, verifyAttempts)
         compose.onNodeWithText("设置新序列").assertIsDisplayed()
-        compose.onNodeWithTag("change_sequence_new").performTextInput("new2")
-        compose.onNodeWithTag("change_sequence_confirmation").performTextInput("new2")
+        compose.onNodeWithTag("change_sequence_new").performTextInput("7890+1")
+        compose.onNodeWithTag("change_sequence_confirmation").performTextInput("7890+1")
         compose.onNodeWithTag("wizard_primary").performClick()
         compose.onNodeWithText("确认修改").assertIsDisplayed()
         compose.onNodeWithTag("wizard_primary").performClick()

@@ -17,6 +17,24 @@ import org.junit.Test
 class ExampleUnitTest {
 
     @Test
+    fun weakReplacementCannotChangeExistingVaultCredential() {
+        val tempDir = Files.createTempDirectory("xome_rotation_test").toFile()
+        try {
+            val headerFile = File(tempDir, "legacy.header")
+            val original = VaultCryptoEngine.createSpaceHeaderBytes(
+                "1314".toCharArray(), ByteArray(32) { 7 }, 4096, 1, 1
+            )
+            headerFile.writeBytes(original)
+            assertFalse(VaultCryptoEngine.changeSpacePinZeroReencryption(
+                headerFile, "1314".toCharArray(), "123456".toCharArray()
+            ))
+            assertArrayEquals(original, headerFile.readBytes())
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun spaceHeader_128Bytes_createParseAndZeroReencryptionPinChange() {
         val tempDir = Files.createTempDirectory("xome_test").toFile()
         try {
@@ -55,6 +73,8 @@ class ExampleUnitTest {
             assertEquals(128L, headerFile.length())
 
             val reparsed = VaultCryptoEngine.parseSpaceHeader(headerFile)!!
+            assertEquals(65536, reparsed.memoryCostKb)
+            assertEquals(3, reparsed.timeCost)
             assertNull(VaultCryptoEngine.tryUnlockSpaceHeader(reparsed, "1314".toCharArray()))
             val unlockedWithNewPin = VaultCryptoEngine.tryUnlockSpaceHeader(reparsed, "9988+11".toCharArray())
             assertNotNull(unlockedWithNewPin)

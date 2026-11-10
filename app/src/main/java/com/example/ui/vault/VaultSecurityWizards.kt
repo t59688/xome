@@ -276,7 +276,7 @@ internal fun CreateIndependentSpaceWizard(
                     "create_space_confirmation", secret = true)
                 WizardValidationHint(
                     good = VaultWizardRules.validSequence(sequence),
-                    text = tr(zh, "4–16 个字符，支持计算表达式", "4–16 characters; calculator expressions allowed"),
+                    text = tr(zh, "6–16 个字符，必须同时包含数字与计算器符号", "6–16 characters combining digits and calculator symbols"),
                     accent = accent
                 )
                 if (confirmation.isNotEmpty()) {
@@ -357,7 +357,7 @@ internal fun ChangeUnlockSequenceWizard(
     var error by remember { mutableStateOf<String?>(null) }
 
     val canContinue = when (step) {
-        0 -> VaultWizardRules.validSequence(current)
+        0 -> VaultWizardRules.validCurrentSequence(current)
         1 -> VaultWizardRules.changedSequence(current, next, confirmation)
         else -> true
     }
@@ -437,8 +437,8 @@ internal fun ChangeUnlockSequenceWizard(
                     accent, "change_sequence_current", secret = true
                 )
                 WizardValidationHint(
-                    good = VaultWizardRules.validSequence(current),
-                    text = tr(zh, "4–16 个字符", "4–16 characters"), accent = accent
+                    good = VaultWizardRules.validCurrentSequence(current),
+                    text = tr(zh, "输入已有密码，兼容旧版序列", "Enter your existing sequence, including legacy credentials"), accent = accent
                 )
             }
             1 -> WizardSection(
@@ -460,8 +460,8 @@ internal fun ChangeUnlockSequenceWizard(
                 )
                 WizardValidationHint(
                     good = VaultWizardRules.validSequence(next) && next.trim() != current.trim(),
-                    text = tr(zh, "4–16 个字符，且不同于旧序列",
-                        "4–16 characters, different from the current sequence"),
+                    text = tr(zh, "6–16 个字符，包含数字与符号，且不同于旧序列",
+                        "6–16 characters with digits and symbols, different from the current sequence"),
                     accent = accent
                 )
                 if (confirmation.isNotEmpty()) {

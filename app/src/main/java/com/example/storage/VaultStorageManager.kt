@@ -1,15 +1,13 @@
 package com.example.storage
 
-import android.app.PendingIntent
+import android.app.RecoverableSecurityException
 import android.content.ContentResolver
-import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.IntentSender
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
-import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -76,7 +74,9 @@ object VaultStorageManager {
     data class SourceDeletionOutcome(
         val deletedImmediatelyCount: Int,
         val pendingSystemDeleteIntentSender: IntentSender?,
-        val remainingHandlesCount: Int
+        val remainingHandlesCount: Int,
+        val pendingHandles: List<DeletableSourceHandle> = emptyList(),
+        val unresolvedHandles: List<DeletableSourceHandle> = emptyList()
     )
 
     fun resolveVaultTree(context: Context): VaultDirectoryTree {
@@ -161,6 +161,9 @@ object VaultStorageManager {
         seedSampleFiles: Boolean = true,
         activateImmediately: Boolean = true
     ): VaultSessionManager.ActiveVaultSession = withContext(Dispatchers.IO) {
+        require(com.example.crypto.VaultSequencePolicy.isValidNewSequence(java.nio.CharBuffer.wrap(pinChars))) {
+            "Invalid new vault sequence"
+        }
         val tree = resolveVaultTree(context)
         val spaceId = generateRandomSpaceId(tree.spacesDir)
         val headerFile = File(tree.spacesDir, "$spaceId.header")
@@ -418,201 +421,146 @@ object VaultStorageManager {
     }
 
     /**
-     * Resolves a picked URI (from SAF OpenMultipleDocuments, Android 13+ Photo Picker, or MediaStore)
-     * into its canonical MediaStore URI and/or physical filesystem path so source deletion succeeds.
+     * Only the provider may map a document to MediaStore. Names, sizes, picker IDs
+     * and filesystem paths are not source identities.
      */
-    private fun resolveDeletableHandle(
+    internal fun resolveDeletableHandle(
         context: Context,
         uri: Uri,
         displayName: String,
         mimeType: String,
         size: Long
-    ): DeletableSourceHandle {
-        val resolver = context.contentResolver
-        var mediaStoreUri: Uri? = null
-        var filePath: String? = null
+    ): DeletableSourceHandle = DeletableSourceHandle(
+        originalUri = uri,
+        displayName = displayName,
+        mimeType = mimeType,
+        size = size,
+        resolvedMediaStoreUri = exactMediaUri(context, uri),
+        resolvedFilePath = null
+    )
 
-        try {
-            val uriStr = uri.toString()
-            val authority = uri.authority ?: ""
-
-            // 1. Check if it's an ExternalStorage Document URI (e.g. primary:DCIM/Camera/IMG.jpg)
-            if (authority == "com.android.externalstorage.documents" && DocumentsContract.isDocumentUri(context, uri)) {
-                val docId = DocumentsContract.getDocumentId(uri)
-                val parts = docId.split(":")
-                if (parts.size >= 2 && parts[0].equals("primary", ignoreCase = true)) {
-                    filePath = "${Environment.getExternalStorageDirectory().absolutePath}/${parts[1]}"
-                }
-            }
-
-            // 2. Check if it's a MediaProvider Document URI (e.g. image:100000123, video:100000123, document:100000123)
-            if (authority == "com.android.providers.media.documents" && DocumentsContract.isDocumentUri(context, uri)) {
-                val docId = DocumentsContract.getDocumentId(uri)
-                val parts = docId.split(":")
-                val numericId = parts.lastOrNull()?.toLongOrNull()
-                if (numericId != null) {
-                    mediaStoreUri = when (parts.firstOrNull()?.lowercase()) {
-                        "image" -> ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, numericId)
-                        "video" -> ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, numericId)
-                        "audio" -> ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, numericId)
-                        else -> ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), numericId)
-                    }
-                }
-            }
-
-            // 3. Check if it's an Android 13+ Photo Picker URI (e.g. content://media/picker/.../media/100000123)
-            if (mediaStoreUri == null && (uriStr.contains("/picker/") || authority.contains("photopicker") || authority == "media")) {
-                val lastSegment = uri.lastPathSegment
-                val numericId = lastSegment?.substringAfterLast(':')?.toLongOrNull()
-                if (numericId != null) {
-                    mediaStoreUri = when {
-                        mimeType.startsWith("image/") -> ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, numericId)
-                        mimeType.startsWith("video/") -> ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, numericId)
-                        mimeType.startsWith("audio/") -> ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, numericId)
-                        else -> ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), numericId)
-                    }
-                }
-            }
-
-            // 4. If still no MediaStore URI, query MediaStore by DISPLAY_NAME (and size) to locate the canonical item
-            if (mediaStoreUri == null && displayName.isNotBlank()) {
-                val collection = when {
-                    mimeType.startsWith("image/") -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                    mimeType.startsWith("video/") -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                    else -> MediaStore.Files.getContentUri("external")
-                }
-                val projection = arrayOf(
-                    MediaStore.MediaColumns._ID,
-                    MediaStore.MediaColumns.DATA
-                )
-                val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
-                val selectionArgs = arrayOf(displayName)
-                resolver.query(collection, projection, selection, selectionArgs, "${MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { c ->
-                    if (c.moveToFirst()) {
-                        val idIdx = c.getColumnIndex(MediaStore.MediaColumns._ID)
-                        val dataIdx = c.getColumnIndex(MediaStore.MediaColumns.DATA)
-                        if (idIdx >= 0) {
-                            val id = c.getLong(idIdx)
-                            mediaStoreUri = ContentUris.withAppendedId(collection, id)
-                        }
-                        if (filePath == null && dataIdx >= 0 && !c.isNull(dataIdx)) {
-                            filePath = c.getString(dataIdx)
-                        }
-                    }
-                }
-            }
-
-            // 5. Query _DATA path from mediaStoreUri or original uri if available
-            val targetForDataQuery = mediaStoreUri ?: uri
-            if (filePath == null) {
-                resolver.query(targetForDataQuery, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { c ->
-                    if (c.moveToFirst()) {
-                        val idx = c.getColumnIndex(MediaStore.MediaColumns.DATA)
-                        if (idx >= 0 && !c.isNull(idx)) {
-                            filePath = c.getString(idx)
-                        }
-                    }
-                }
-            }
+    private fun exactMediaUri(context: Context, uri: Uri): Uri? {
+        if (uri.authority == MediaStore.AUTHORITY &&
+            uri.pathSegments.let { it.size == 4 && it[1] in setOf("images", "video", "audio", "file") &&
+                it[2] == "media" && it[3].toLongOrNull() != null }
+        ) return uri
+        // Files URIs use /volume/file/id, without a /media segment.
+        if (uri.authority == MediaStore.AUTHORITY && uri.pathSegments.let {
+                it.size == 3 && it[1] == "file" && it[2].toLongOrNull() != null
+            }) return uri
+        if (!DocumentsContract.isDocumentUri(context, uri)) return null
+        return try {
+            MediaStore.getMediaUri(context, uri)?.takeIf { it.authority == MediaStore.AUTHORITY }
         } catch (_: Exception) {
+            null
         }
+    }
 
-        return DeletableSourceHandle(
-            originalUri = uri,
-            displayName = displayName,
-            mimeType = mimeType,
-            size = size,
-            resolvedMediaStoreUri = mediaStoreUri,
-            resolvedFilePath = filePath
+    internal fun isSameOriginal(context: Context, handle: DeletableSourceHandle, selected: Uri): Boolean {
+        if (selected == handle.originalUri) return true
+        if (DocumentsContract.isDocumentUri(context, selected) &&
+            DocumentsContract.isDocumentUri(context, handle.originalUri) &&
+            selected.authority == handle.originalUri.authority &&
+            DocumentsContract.getDocumentId(selected) == DocumentsContract.getDocumentId(handle.originalUri)
+        ) return true
+        val originalMedia = exactMediaUri(context, handle.originalUri) ?: return false
+        return exactMediaUri(context, selected) == originalMedia
+    }
+
+    fun canReselectOriginal(context: Context, handle: DeletableSourceHandle): Boolean =
+        DocumentsContract.isDocumentUri(context, handle.originalUri) ||
+            exactMediaUri(context, handle.originalUri) != null
+
+    // Permission loss, null cursors and provider errors are unknown, never proof of deletion.
+    internal fun isSourceAbsent(context: Context, uri: Uri): Boolean = try {
+        context.contentResolver.query(uri, null, null, null, null)?.use { !it.moveToFirst() } ?: false
+    } catch (_: java.io.FileNotFoundException) {
+        // A document provider may report absence this way, but a revoked grant
+        // must never be mistaken for absence. Cloud/network errors stay unknown.
+        uri.authority in setOf("com.android.externalstorage.documents", "com.android.providers.media.documents") &&
+            DocumentsContract.isDocumentUri(context, uri) &&
+            context.checkUriPermission(uri, android.os.Process.myPid(), android.os.Process.myUid(),
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+    } catch (_: Exception) {
+        false
+    }
+
+    suspend fun verifyOriginalDeletion(
+        context: Context,
+        handles: List<DeletableSourceHandle>
+    ): SourceDeletionOutcome = withContext(Dispatchers.IO) {
+        val remaining = handles.distinctBy { it.originalUri }.filterNot {
+            isSourceAbsent(context, it.resolvedMediaStoreUri ?: it.originalUri)
+        }
+        SourceDeletionOutcome(
+            handles.distinctBy { it.originalUri }.size - remaining.size, null,
+            remaining.size, unresolvedHandles = remaining
         )
     }
 
     /**
-     * Executes deletion of original source files after the user confirms the deletion dialog.
-     * - Tries direct SAF `DocumentsContract.deleteDocument`, direct `ContentResolver.delete`, and POSIX `File.delete()`.
-     * - For any media items protected by Android 11+ (API 30+) Scoped Storage that require OS user consent,
-     *   creates a batch `MediaStore.createDeleteRequest(resolver, mediaUris).intentSender` so the Activity
-     *   can immediately complete the deletion.
+     * Deletes exact imported sources only. Android 10 consent grants a retry;
+     * Android 11+ consent performs deletion and must subsequently be verified.
      */
     suspend fun executeConfirmedOriginalDeletion(
         context: Context,
         handles: List<DeletableSourceHandle>
     ): SourceDeletionOutcome = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
-        var deletedCount = 0
-        val mediaUrisRequiringSystemRequest = mutableListOf<Uri>()
-
-        for (handle in handles) {
-            var deleted = false
-
-            // Strategy 1: SAF DocumentsContract.deleteDocument
-            if (!deleted && DocumentsContract.isDocumentUri(context, handle.originalUri)) {
-                deleted = try {
-                    DocumentsContract.deleteDocument(resolver, handle.originalUri)
+        var deleted = 0
+        val remaining = mutableListOf<DeletableSourceHandle>()
+        val mediaPending = mutableListOf<DeletableSourceHandle>()
+        var recovery: IntentSender? = null
+        val recoveryHandles = mutableListOf<DeletableSourceHandle>()
+        for (handle in handles.distinctBy { it.originalUri }) {
+            val mediaUri = exactMediaUri(context, handle.originalUri)
+            val exact = handle.copy(resolvedMediaStoreUri = mediaUri, resolvedFilePath = null)
+            val targets = listOfNotNull(handle.originalUri, mediaUri).distinct()
+            var completed = false
+            var consent: IntentSender? = null
+            for (target in targets) {
+                try {
+                    val accepted = if (DocumentsContract.isDocumentUri(context, target)) {
+                        DocumentsContract.deleteDocument(resolver, target)
+                    } else {
+                        resolver.delete(target, null, null) > 0
+                    }
+                    if (accepted && isSourceAbsent(context, target)) {
+                        completed = true
+                        break
+                    }
+                } catch (e: RecoverableSecurityException) {
+                    if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+                        consent = e.userAction.actionIntent.intentSender
+                    }
                 } catch (_: Exception) {
-                    false
+                    // Retain this exact handle for consent or SAF recovery.
                 }
             }
-
-            // Strategy 2: ContentResolver.delete on originalUri
-            if (!deleted) {
-                deleted = try {
-                    resolver.delete(handle.originalUri, null, null) > 0
-                } catch (_: Exception) {
-                    false
-                }
-            }
-
-            // Strategy 3: ContentResolver.delete on resolved canonical MediaStore URI
-            if (!deleted && handle.resolvedMediaStoreUri != null) {
-                deleted = try {
-                    resolver.delete(handle.resolvedMediaStoreUri, null, null) > 0
-                } catch (_: Exception) {
-                    false
-                }
-            }
-
-            // Strategy 4: Direct POSIX file deletion if path is writable
-            if (!deleted && !handle.resolvedFilePath.isNullOrBlank()) {
-                val f = File(handle.resolvedFilePath)
-                if (f.exists() && f.delete()) {
-                    deleted = true
-                    MediaScannerConnection.scanFile(context, arrayOf(f.absolutePath), null, null)
-                }
-            }
-
-            if (deleted) {
-                deletedCount++
-                handle.resolvedFilePath?.let { path ->
-                    MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
-                }
+            if (completed) {
+                deleted++
+            } else if (consent != null && recovery == null) {
+                recovery = consent
+                recoveryHandles.add(exact)
+            } else if (mediaUri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                mediaPending.add(exact)
             } else {
-                // Collect canonical MediaStore URI for Android 11+ MediaStore.createDeleteRequest
-                val candidateMediaUri = handle.resolvedMediaStoreUri
-                    ?: if (handle.originalUri.authority == "media") handle.originalUri else null
-                if (candidateMediaUri != null) {
-                    mediaUrisRequiringSystemRequest.add(candidateMediaUri)
-                }
+                remaining.add(exact)
             }
         }
-
-        var systemDeleteIntentSender: IntentSender? = null
-        if (mediaUrisRequiringSystemRequest.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (mediaPending.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
-                val pendingIntent: PendingIntent = MediaStore.createDeleteRequest(
-                    resolver,
-                    mediaUrisRequiringSystemRequest.distinct()
-                )
-                systemDeleteIntentSender = pendingIntent.intentSender
+                recovery = MediaStore.createDeleteRequest(
+                    resolver, mediaPending.mapNotNull { it.resolvedMediaStoreUri }.distinct()
+                ).intentSender
+                recoveryHandles.addAll(mediaPending)
             } catch (_: Exception) {
+                remaining.addAll(mediaPending)
             }
         }
-
-        SourceDeletionOutcome(
-            deletedImmediatelyCount = deletedCount,
-            pendingSystemDeleteIntentSender = systemDeleteIntentSender,
-            remainingHandlesCount = mediaUrisRequiringSystemRequest.size
-        )
+        SourceDeletionOutcome(deleted, recovery, remaining.size + recoveryHandles.size,
+            recoveryHandles, remaining)
     }
 
     suspend fun createEncryptedNoteInVault(
@@ -707,8 +655,15 @@ object VaultStorageManager {
                     }.getOrNull() ?: fileEntity.originalName
                     return@withContext Result.success("Download/XomeRestored/$publishedName")
                 } catch (e: Exception) {
-                    // Never leave a corrupt or invisible IS_PENDING plaintext export behind.
-                    runCatching { resolver.delete(itemUri, null, null) }
+                    // Clean only the row created by this export; surface cleanup failure.
+                    try {
+                        if (resolver.delete(itemUri, null, null) <= 0 && !isSourceAbsent(context, itemUri)) {
+                            throw IOException("Partial plaintext export could not be removed")
+                        }
+                    } catch (cleanup: Exception) {
+                        throw IOException("Export failed; partial plaintext cleanup could not be confirmed", e)
+                            .apply { addSuppressed(cleanup) }
+                    }
                     throw e
                 }
             }
@@ -717,9 +672,16 @@ object VaultStorageManager {
                 context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
                 "XomeRestored"
             ).apply { mkdirs() }
-            val outFile = File(fallbackDir, fileEntity.originalName)
-            FileOutputStream(outFile).use { fos ->
-                VaultCryptoEngine.decryptBlobFileToStream(masterKey, blobFile, fos)
+            val outFile = File.createTempFile("restored-", "." + File(fileEntity.originalName).extension, fallbackDir)
+            try {
+                FileOutputStream(outFile).use { fos ->
+                    VaultCryptoEngine.decryptBlobFileToStream(masterKey, blobFile, fos)
+                }
+            } catch (e: Exception) {
+                if (!outFile.delete()) {
+                    throw IOException("Export failed; partial plaintext cleanup could not be confirmed", e)
+                }
+                throw e
             }
             Result.success(outFile.absolutePath)
         } catch (e: Exception) {

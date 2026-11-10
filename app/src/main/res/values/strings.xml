@@ -5,8 +5,8 @@
     <string name="calc_rad">RAD</string>
     <string name="calc_history_empty">No recent calculations</string>
     <string name="onboarding_title">Initialize Primary Vault Space</string>
-    <string name="onboarding_subtitle">Set a 4–16 character secret sequence. Enter it in the calculator and press = to unlock.</string>
-    <string name="onboarding_pin_label">Unlock Sequence (e.g. 1314)</string>
+    <string name="onboarding_subtitle">Set 6–16 characters combining digits and calculator symbols. Enter your sequence and press = to unlock.</string>
+    <string name="onboarding_pin_label">Unlock Sequence (digits and symbols)</string>
     <string name="onboarding_pin_confirm_label">Confirm Unlock Sequence</string>
     <string name="onboarding_create_btn">Provision Argon2id + AES-256-GCM Vault</string>
     <string name="vault_title">Encrypted Space</string>

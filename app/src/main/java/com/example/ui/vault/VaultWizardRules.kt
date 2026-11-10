@@ -1,5 +1,7 @@
 package com.example.ui.vault
 
+import com.example.crypto.VaultSequencePolicy
+
 /** User-entered sequences are calculator expressions, not numeric-only PINs. */
 internal object VaultWizardRules {
     private const val MAX_ALIAS_LENGTH = 36
@@ -10,14 +12,15 @@ internal object VaultWizardRules {
     }
 
     fun validSequence(value: String): Boolean {
-        val sequence = value.trim()
-        return sequence.length in 4..16 && sequence.none(Char::isISOControl)
+        return VaultSequencePolicy.isValidNewSequence(value)
     }
 
+    fun validCurrentSequence(value: String): Boolean = VaultSequencePolicy.isValidLegacySequence(value)
+
     fun confirmedSequence(value: String, confirmation: String): Boolean =
-        validSequence(value) && value.trim() == confirmation.trim()
+        validSequence(value) && VaultSequencePolicy.normalize(value) == VaultSequencePolicy.normalize(confirmation)
 
     fun changedSequence(current: String, next: String, confirmation: String): Boolean =
-        validSequence(current) && confirmedSequence(next, confirmation) &&
-            current.trim() != next.trim()
+        validCurrentSequence(current) && confirmedSequence(next, confirmation) &&
+            VaultSequencePolicy.normalize(current) != VaultSequencePolicy.normalize(next)
 }

@@ -188,6 +188,7 @@ fun XomeRootHost(
     val importProgress by viewModel.importProgress.collectAsStateWithLifecycle()
     val pendingDeleteHandles by viewModel.pendingDeleteConfirmation.collectAsStateWithLifecycle()
     val pendingSystemDeleteIntent by viewModel.pendingSystemDeleteIntent.collectAsStateWithLifecycle()
+    val pendingSourceReselect by viewModel.pendingSourceReselect.collectAsStateWithLifecycle()
 
     val activeImageViewerFileId by viewModel.activeImageViewerFileId.collectAsStateWithLifecycle()
     val activeDocViewerFile by viewModel.activeDocumentViewerFile.collectAsStateWithLifecycle()
@@ -254,6 +255,8 @@ fun XomeRootHost(
                             importProgress = importProgress,
                             pendingDeleteHandles = pendingDeleteHandles,
                             pendingSystemDeleteIntent = pendingSystemDeleteIntent,
+                            pendingSourceReselect = pendingSourceReselect,
+                            onSourceReselected = viewModel::onSourceReselected,
                             statusBanner = statusBanner,
                             securityReport = securityReport,
                             flagSecureEnabled = flagSecureEnabled,

@@ -113,19 +113,22 @@ jobs:
         run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
       - name: Build signed release AAB
-        run: ./gradlew :app:bundleRelease --no-daemon --stacktrace
+        run: ./gradlew :app:bundleRelease -PsplitApks=false --no-daemon --stacktrace
 
       - name: Stage artifacts
         run: |
           set -euo pipefail
           mkdir -p artifacts/android
-          APK_SRC="$(find app/build/outputs/apk/release -name '*.apk' -type f | head -n 1)"
+          APK_SRC="app/build/outputs/apk/release/app-universal-release.apk"
           AAB_SRC="$(find app/build/outputs/bundle/release -name '*.aab' -type f | head -n 1)"
           test -f "$APK_SRC"
           test -f "$AAB_SRC"
           APK_NAME="xome-${VERSION}-release.apk"
           AAB_NAME="xome-${VERSION}-release.aab"
           cp "$APK_SRC" "artifacts/android/${APK_NAME}"
+          for ABI in arm64-v8a armeabi-v7a x86 x86_64; do
+            cp "app/build/outputs/apk/release/app-${ABI}-release.apk" "artifacts/android/xome-${VERSION}-${ABI}-release.apk"
+          done
           cp "$AAB_SRC" "artifacts/android/${AAB_NAME}"
           echo "APK_NAME=${APK_NAME}" >> "$GITHUB_ENV"
           echo "AAB_NAME=${AAB_NAME}" >> "$GITHUB_ENV"

@@ -74,7 +74,7 @@ jobs:
 
       - name: Build signed AAB
         if: ${{ inputs.format == 'aab' || inputs.format == 'all' }}
-        run: ./gradlew :app:bundleRelease --no-daemon --stacktrace
+        run: ./gradlew :app:bundleRelease -PsplitApks=false --no-daemon --stacktrace
 
       - name: Stage artifacts
         run: |
@@ -85,9 +85,12 @@ jobs:
             VERSION="${GITHUB_REF_NAME}"
           fi
           if [ "${{ inputs.format }}" = "apk" ] || [ "${{ inputs.format }}" = "all" ]; then
-            APK_SRC="$(find app/build/outputs/apk/release -name '*.apk' -type f | head -n 1)"
+            APK_SRC="app/build/outputs/apk/release/app-universal-release.apk"
             test -f "$APK_SRC"
             cp "$APK_SRC" "artifacts/android/xome-${VERSION}-release.apk"
+            for ABI in arm64-v8a armeabi-v7a x86 x86_64; do
+              cp "app/build/outputs/apk/release/app-${ABI}-release.apk" "artifacts/android/xome-${VERSION}-${ABI}-release.apk"
+            done
           fi
           if [ "${{ inputs.format }}" = "aab" ] || [ "${{ inputs.format }}" = "all" ]; then
             AAB_SRC="$(find app/build/outputs/bundle/release -name '*.aab' -type f | head -n 1)"
