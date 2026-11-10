@@ -45,9 +45,12 @@ import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.SecurityUpdateGood
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -130,7 +133,9 @@ fun DisguisedCalculatorScreen(
     onProvisionPrimarySpace: (pin: String, confirm: String, alias: String, stayInCalc: Boolean) -> Unit,
     onDismissOnboarding: () -> Unit,
     onOpenOnboarding: () -> Unit,
-    onImportSelfHealingArchive: (android.net.Uri) -> Unit
+    onImportSelfHealingArchive: (android.net.Uri) -> Unit,
+    updateAvailable: Boolean = false,
+    onOpenUpdates: () -> Unit = {}
 ) {
     val strings = LocalAppStrings.current
     val archiveRestoreLauncher = rememberLauncherForActivityResult(
@@ -165,7 +170,9 @@ fun DisguisedCalculatorScreen(
                 onToggleSciPad = onToggleSciPad,
                 onToggleHistory = onToggleHistory,
                 onToggleLanguage = onToggleLanguage,
-                onOpenSetupIfEmpty = onOpenOnboarding
+                onOpenSetupIfEmpty = onOpenOnboarding,
+                updateAvailable = updateAvailable,
+                onOpenUpdates = onOpenUpdates
             )
 
             AnimatedVisibility(visible = needsOnboarding) {
@@ -310,7 +317,9 @@ private fun CalculatorTopToolbar(
     onToggleSciPad: () -> Unit,
     onToggleHistory: () -> Unit,
     onToggleLanguage: () -> Unit,
-    onOpenSetupIfEmpty: () -> Unit
+    onOpenSetupIfEmpty: () -> Unit,
+    updateAvailable: Boolean,
+    onOpenUpdates: () -> Unit
 ) {
     val strings = LocalAppStrings.current
 
@@ -362,6 +371,23 @@ private fun CalculatorTopToolbar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            IconButton(
+                onClick = onOpenUpdates,
+                modifier = Modifier.size(38.dp).clip(RoundedCornerShape(10.dp))
+                    .background(CalcDisplayBg).testTag("calc_updates_button")
+            ) {
+                BadgedBox(badge = {
+                    if (updateAvailable) Badge(Modifier.testTag("app_update_badge"))
+                }) {
+                    Icon(
+                        imageVector = Icons.Default.SecurityUpdateGood,
+                        contentDescription = if (strings.language == com.example.ui.i18n.AppLanguage.ZH)
+                            "应用更新" else "App updates",
+                        tint = if (updateAvailable) VaultAccentPrimary else CalcTextSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
             IconButton(
                 onClick = onToggleLanguage,
                 modifier = Modifier

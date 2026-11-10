@@ -23,8 +23,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.example.crypto.VaultExternalUiLockPolicy
 import com.example.crypto.VaultSessionManager
 import com.example.ui.calculator.DisguisedCalculatorScreen
@@ -32,6 +38,9 @@ import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.i18n.stringsForLanguage
 import com.example.ui.theme.CalcChassisBg
 import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.update.AppUpdateHost
+import com.example.update.pollForAppUpdates
+import kotlinx.coroutines.launch
 import com.example.ui.vault.VaultSpaceScreen
 import com.example.ui.viewer.InMemoryDocumentViewerDialog
 import com.example.ui.viewer.InMemoryImageViewerOverlay
@@ -103,6 +112,12 @@ class MainActivity : ComponentActivity() {
             IntentFilter(Intent.ACTION_SCREEN_OFF),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                pollForAppUpdates { viewModel.updates.check() }
+            }
+        }
 
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
@@ -178,6 +193,9 @@ fun XomeRootHost(
     val securityReport by viewModel.environmentSecurityReport.collectAsStateWithLifecycle()
     val flagSecureEnabled by viewModel.flagSecureWindowEnabled.collectAsStateWithLifecycle()
 
+    val updateState by viewModel.updates.state.collectAsStateWithLifecycle()
+    var showUpdates by rememberSaveable { mutableStateOf(false) }
+
     val spaceMeta by viewModel.currentSpaceMeta.collectAsStateWithLifecycle()
     val folders by viewModel.currentFolders.collectAsStateWithLifecycle()
     val files by viewModel.currentFiles.collectAsStateWithLifecycle()
@@ -217,7 +235,9 @@ fun XomeRootHost(
                     onProvisionPrimarySpace = viewModel::provisionInitialPrimarySpace,
                     onDismissOnboarding = viewModel::dismissOnboardingToCalculator,
                     onOpenOnboarding = viewModel::openOnboardingSetup,
-                    onImportSelfHealingArchive = viewModel::importSelfHealingBundleFromUri
+                    onImportSelfHealingArchive = viewModel::importSelfHealingBundleFromUri,
+                    updateAvailable = updateState.hasUpdate,
+                    onOpenUpdates = { showUpdates = true }
                 )
             } else {
                 val imageFilesInFolder = files.filter { it.mimeType.startsWith("image/") }
@@ -293,5 +313,11 @@ fun XomeRootHost(
                 }
             }
         }
+        AppUpdateHost(
+            repository = viewModel.updates,
+            showSettings = showUpdates,
+            onOpen = { showUpdates = true },
+            onClose = { showUpdates = false }
+        )
     }
 }

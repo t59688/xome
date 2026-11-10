@@ -68,7 +68,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private val appContext = application.applicationContext
-    // Deliberately passive until explicitly opened in the unlocked settings screen.
+    // Automatic checks are owned by the foreground Activity lifecycle.
     val updates = UpdateRepository(appContext)
     private val uiPrefs = appContext.getSharedPreferences("xome_ui_prefs", android.content.Context.MODE_PRIVATE)
 

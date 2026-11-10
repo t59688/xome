@@ -75,6 +75,8 @@ class UpdateRepository(
                 .remove("release")
                 .remove("download_error")
                 .remove("checked_at")
+                .remove("attempted_at")
+                .remove("last_check_failed")
                 .apply()
             _state.value = UpdateState()
         }
@@ -82,20 +84,23 @@ class UpdateRepository(
 
     suspend fun check(force: Boolean = false) = withContext(Dispatchers.IO) {
         mutex.withLock {
-            refreshLocked()
-            if (_state.value.isDownloading || _state.value.phase == UpdatePhase.READY) return@withLock
-            val now = System.currentTimeMillis()
-            val sinceSuccess = now - preferences.getLong("checked_at", 0)
-            val sinceAttempt = now - preferences.getLong("attempted_at", 0)
-            if (!force && (sinceSuccess in 0 until 6 * 3600_000L || sinceAttempt in 0 until 15 * 60_000L)) return@withLock
-            preferences.edit().putLong("attempted_at", now).apply()
-            _state.value = _state.value.copy(phase = UpdatePhase.CHECKING, message = null)
             try {
+                refreshLocked()
+                if (_state.value.isDownloading || _state.value.phase == UpdatePhase.READY) return@withLock
+                val now = System.currentTimeMillis()
+                val sinceSuccess = now - preferences.getLong("checked_at", 0)
+                val sinceAttempt = now - preferences.getLong("attempted_at", 0)
+                val recentSuccess = !preferences.getBoolean("last_check_failed", false) &&
+                    sinceSuccess in 0 until 6 * 3600_000L
+                if (!force && (recentSuccess || sinceAttempt in 0 until UPDATE_POLL_INTERVAL_MS)) return@withLock
+                preferences.edit().putLong("attempted_at", now).putBoolean("last_check_failed", true).apply()
+                _state.value = _state.value.copy(phase = UpdatePhase.CHECKING, message = null)
                 val release = fetchLatest(_channel.value)
                 val newer = release?.takeIf {
                     it.version > (ReleaseVersion.parse(BuildConfig.VERSION_NAME) ?: ReleaseVersion(0, 0, 0))
                 }
-                preferences.edit().putLong("checked_at", now).putString("release", newer?.toJson()).apply()
+                preferences.edit().putLong("checked_at", now).putString("release", newer?.toJson())
+                    .putBoolean("last_check_failed", false).apply()
                 _state.value = UpdateState(
                     phase = if (newer != null) UpdatePhase.AVAILABLE else if (release == null) UpdatePhase.NO_RELEASE else UpdatePhase.UP_TO_DATE,
                     release = newer,

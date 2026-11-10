@@ -33,13 +33,39 @@ class UpdateRepositoryTest {
         context.getSharedPreferences(UpdateRepository.PREFERENCES, Context.MODE_PRIVATE).edit().clear().commit()
     }
 
-    @Test fun `no network call occurs before settings explicitly checks`() = runBlocking {
+    @Test fun `repository construction is passive until the app lifecycle or user checks`() = runBlocking {
         var calls = 0
         val repository = UpdateRepository(context) { _ -> calls++; release }
         assertEquals(0, calls)
         assertEquals(UpdatePhase.IDLE, repository.state.value.phase)
         repository.check(force = true)
         assertEquals(1, calls)
+    }
+
+    @Test fun `failed manual check can retry after fifteen minutes despite recent success`() = runBlocking {
+        var requests = 0
+        val repository = UpdateRepository(context) {
+            requests++
+            if (requests == 2) throw java.io.IOException("Offline")
+            release
+        }
+        repository.check()
+        repository.check(force = true)
+        assertEquals(UpdatePhase.FAILED, repository.state.value.phase)
+        context.getSharedPreferences(UpdateRepository.PREFERENCES, Context.MODE_PRIVATE).edit()
+            .putLong("attempted_at", System.currentTimeMillis() - 16 * 60_000L).commit()
+        val restored = UpdateRepository(context) { requests++; release }
+        restored.check()
+        assertEquals(3, requests)
+    }
+
+    @Test fun `switching channel allows its first automatic check immediately`() = runBlocking {
+        var requests = 0
+        val repository = UpdateRepository(context) { requests++; release }
+        repository.check()
+        repository.selectChannel(UpdateChannel.BETA)
+        repository.check()
+        assertEquals(2, requests)
     }
 
     @Test fun `channel switching clears cached release without network access`() = runBlocking {
