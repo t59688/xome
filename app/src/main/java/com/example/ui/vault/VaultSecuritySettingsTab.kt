@@ -1,9 +1,9 @@
 package com.example.ui.vault
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,12 +20,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddModerator
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.Restore
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -41,6 +43,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,11 +54,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.crypto.RootSecurityDetector
 import com.example.crypto.VaultSessionManager
 import com.example.data.VaultSpaceMetaEntity
+import com.example.ui.i18n.AppLanguage
+import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.CalcAccentOrange
 import com.example.ui.theme.CalcClearKeyText
 import com.example.ui.theme.CalcTextMuted
@@ -81,41 +87,42 @@ fun VaultSecuritySettingsTab(
     flagSecureEnabled: Boolean,
     isStreamingEmulator: Boolean,
     onToggleFlagSecure: (Boolean) -> Unit,
+    onSelectLanguage: (AppLanguage) -> Unit,
     onChangeSequence: (oldSeq: String, newSeq: String, confirmSeq: String, cb: (Boolean, String) -> Unit) -> Unit,
     onCreateDecoySpace: (seq: String, confirmSeq: String, alias: String, isDecoy: Boolean, switchNow: Boolean, cb: (Boolean, String) -> Unit) -> Unit,
     onExportSelfHealingArchive: () -> Unit,
     onImportSelfHealingArchive: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val strings = LocalAppStrings.current
+
     var oldPin by rememberSaveable { mutableStateOf("") }
     var newPin by rememberSaveable { mutableStateOf("") }
     var confirmNewPin by rememberSaveable { mutableStateOf("") }
     var pinFeedback by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
 
-    var decoyAlias by rememberSaveable { mutableStateOf("Decoy Travel Space") }
+    var decoyAlias by rememberSaveable { mutableStateOf(strings.defaultDecoySpaceAlias) }
     var decoyPin by rememberSaveable { mutableStateOf("") }
     var decoyConfirmPin by rememberSaveable { mutableStateOf("") }
     var isDecoyMode by rememberSaveable { mutableStateOf(true) }
     var switchImmediately by rememberSaveable { mutableStateOf(false) }
     var decoyFeedback by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
 
+    LaunchedEffect(strings.language) {
+        if (decoyAlias in listOf("Guest Space", "访客空间", "Decoy Travel Space", "诱饵旅行空间")) {
+            decoyAlias = strings.defaultDecoySpaceAlias
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // 1. Module 6.1 & 6.3: Root / Hook Environment & FLAG_SECURE Window Control
-        RootEnvironmentSecurityCard(
-            report = securityReport,
-            flagSecureEnabled = flagSecureEnabled,
-            isStreamingEmulator = isStreamingEmulator,
-            onToggleFlagSecure = onToggleFlagSecure
-        )
-
-        // 2. Active Space 128-Byte Binary Envelope Header Inspector
-        BinaryHeaderInspectorCard(
+        // 1. Space Summary Card (Clean metrics + optional expandable technical details)
+        SpaceOverviewCard(
             session = session,
             spaceMeta = spaceMeta,
             totalSpacesCount = totalSpacesCount,
@@ -123,10 +130,20 @@ fun VaultSecuritySettingsTab(
             totalPlainBytes = totalPlainBytes
         )
 
-        // 3. Module 4.4: Zero Re-encryption Password Change (< 500ms)
+        // 2. Language & Screenshot Protection Card
+        LanguageAndPrivacyCard(
+            currentLanguage = strings.language,
+            report = securityReport,
+            flagSecureEnabled = flagSecureEnabled,
+            isStreamingEmulator = isStreamingEmulator,
+            onSelectLanguage = onSelectLanguage,
+            onToggleFlagSecure = onToggleFlagSecure
+        )
+
+        // 3. Change Unlock Sequence Card
         Surface(
             color = VaultSurface,
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(16.dp),
             border = BorderStroke(1.dp, VaultBorderSubtle),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -142,17 +159,17 @@ fun VaultSecuritySettingsTab(
                         imageVector = Icons.Default.LockReset,
                         contentDescription = null,
                         tint = VaultCyanPrimary,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                     Column {
                         Text(
-                            text = "Zero Re-encryption Sequence Rotation",
+                            text = strings.zeroReencryptionTitle,
                             style = MaterialTheme.typography.titleMedium,
                             color = CalcTextPrimary
                         )
                         Text(
-                            text = "Re-wraps the 256-bit MasterKey inside ${session.spaceId}.header without touching .db or .dat blobs (<500ms).",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = strings.zeroReencryptionSubtitle(session.spaceId),
+                            style = MaterialTheme.typography.labelSmall,
                             color = CalcTextSecondary
                         )
                     }
@@ -161,7 +178,7 @@ fun VaultSecuritySettingsTab(
                 OutlinedTextField(
                     value = oldPin,
                     onValueChange = { oldPin = it },
-                    label = { Text("Current Trigger Sequence") },
+                    label = { Text(strings.currentTriggerSequenceLabel) },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -179,7 +196,7 @@ fun VaultSecuritySettingsTab(
                     OutlinedTextField(
                         value = newPin,
                         onValueChange = { newPin = it },
-                        label = { Text("New Sequence (4–16)") },
+                        label = { Text(strings.newSequenceLabel) },
                         singleLine = true,
                         modifier = Modifier
                             .weight(1f)
@@ -192,7 +209,7 @@ fun VaultSecuritySettingsTab(
                     OutlinedTextField(
                         value = confirmNewPin,
                         onValueChange = { confirmNewPin = it },
-                        label = { Text("Confirm New") },
+                        label = { Text(strings.confirmNewLabel) },
                         singleLine = true,
                         modifier = Modifier
                             .weight(1f)
@@ -226,25 +243,25 @@ fun VaultSecuritySettingsTab(
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = VaultCyanPrimary,
-                        contentColor = Color(0xFF001F26)
+                        contentColor = Color(0xFF06202B)
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp)
+                        .height(46.dp)
                         .testTag("change_pin_submit_button")
                 ) {
-                    Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(17.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Rotate KEK & Re-Seal 128B Header", fontWeight = FontWeight.Bold)
+                    Text(strings.rotateKekBtn, fontWeight = FontWeight.SemiBold, maxLines = 1)
                 }
             }
         }
 
-        // 4. Module 3: Plausible Deniability — Create Independent Private / Decoy Space
+        // 4. Create Additional Independent Space Card
         Surface(
             color = VaultSurface,
-            shape = RoundedCornerShape(18.dp),
-            border = BorderStroke(1.dp, VaultPurpleDecoy.copy(alpha = 0.45f)),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, VaultBorderSubtle),
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(
@@ -259,28 +276,27 @@ fun VaultSecuritySettingsTab(
                         imageVector = Icons.Default.AddModerator,
                         contentDescription = null,
                         tint = VaultPurpleDecoy,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                     Column {
                         Text(
-                            text = "Plausible Deniability: New Independent Space",
+                            text = strings.plausibleDeniabilityTitle,
                             style = MaterialTheme.typography.titleMedium,
                             color = CalcTextPrimary
                         )
                         Text(
-                            text = "Provisions an unlinked 128B .header + isolated SQLCipher .db unlocked by a separate calculator sequence.",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = strings.plausibleDeniabilitySubtitle,
+                            style = MaterialTheme.typography.labelSmall,
                             color = CalcTextSecondary
                         )
                     }
                 }
 
-                // Quick decoy sequence presets
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Quick Sequence:", style = MaterialTheme.typography.labelSmall, color = CalcTextMuted)
+                    Text(strings.quickSequenceLabel, style = MaterialTheme.typography.labelSmall, color = CalcTextMuted)
                     listOf("2580", "7788", "9988+11").forEach { preset ->
                         FilterChip(
                             selected = decoyPin == preset,
@@ -290,7 +306,7 @@ fun VaultSecuritySettingsTab(
                             },
                             label = { Text(preset, style = MaterialTheme.typography.labelSmall) },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = VaultPurpleDecoy.copy(alpha = 0.22f),
+                                selectedContainerColor = VaultPurpleDecoy.copy(alpha = 0.2f),
                                 selectedLabelColor = VaultPurpleDecoy
                             )
                         )
@@ -300,7 +316,7 @@ fun VaultSecuritySettingsTab(
                 OutlinedTextField(
                     value = decoyAlias,
                     onValueChange = { decoyAlias = it },
-                    label = { Text("New Space Designation") },
+                    label = { Text(strings.newSpaceDesignationLabel) },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -318,7 +334,7 @@ fun VaultSecuritySettingsTab(
                     OutlinedTextField(
                         value = decoyPin,
                         onValueChange = { decoyPin = it },
-                        label = { Text("New Space Sequence") },
+                        label = { Text(strings.newSpaceSequenceLabel) },
                         singleLine = true,
                         modifier = Modifier
                             .weight(1f)
@@ -331,7 +347,7 @@ fun VaultSecuritySettingsTab(
                     OutlinedTextField(
                         value = decoyConfirmPin,
                         onValueChange = { decoyConfirmPin = it },
-                        label = { Text("Confirm Sequence") },
+                        label = { Text(strings.confirmSequenceLabel) },
                         singleLine = true,
                         modifier = Modifier
                             .weight(1f)
@@ -350,12 +366,12 @@ fun VaultSecuritySettingsTab(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Seed Innocuous Decoy Files",
+                            text = strings.seedDecoyFilesTitle,
                             style = MaterialTheme.typography.bodyMedium,
                             color = CalcTextPrimary
                         )
                         Text(
-                            text = "Pre-populates harmless folders for plausible deniability",
+                            text = strings.seedDecoyFilesSubtitle,
                             style = MaterialTheme.typography.labelSmall,
                             color = CalcTextMuted
                         )
@@ -373,9 +389,10 @@ fun VaultSecuritySettingsTab(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Switch into new space immediately upon creation",
+                        text = strings.switchIntoNewSpaceLabel,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = CalcTextSecondary
+                        color = CalcTextSecondary,
+                        modifier = Modifier.weight(1f)
                     )
                     Switch(
                         checked = switchImmediately,
@@ -415,24 +432,24 @@ fun VaultSecuritySettingsTab(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp)
+                        .height(46.dp)
                         .testTag("create_decoy_space_button")
                 ) {
-                    Text("Provision Independent Encrypted Space", fontWeight = FontWeight.Bold)
+                    Text(strings.provisionIndependentSpaceBtn, fontWeight = FontWeight.SemiBold, maxLines = 1)
                 }
             }
         }
 
-        // 5. Self-Healing External Storage & Archive Sync Card
+        // 5. Backup & Restore Card (Clean single-line buttons that never wrap)
         Surface(
             color = VaultSurface,
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(16.dp),
             border = BorderStroke(1.dp, VaultBorderSubtle),
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -442,17 +459,17 @@ fun VaultSecuritySettingsTab(
                         imageVector = Icons.Default.Storage,
                         contentDescription = null,
                         tint = VaultEmeraldSuccess,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                     Column {
                         Text(
-                            text = "Self-Healing Vault Persistence (.sys_vault_data)",
+                            text = strings.selfHealingPersistenceTitle,
                             style = MaterialTheme.typography.titleMedium,
                             color = CalcTextPrimary
                         )
                         Text(
-                            text = "Export or restore the raw encrypted directory tree (spaces/*.header, db/*.db, blobs/*.dat) for cross-reinstall recovery.",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = strings.selfHealingPersistenceSubtitle,
+                            style = MaterialTheme.typography.labelSmall,
                             color = CalcTextSecondary
                         )
                     }
@@ -465,10 +482,10 @@ fun VaultSecuritySettingsTab(
                     OutlinedButton(
                         onClick = onExportSelfHealingArchive,
                         shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, VaultCyanPrimary.copy(alpha = 0.5f)),
+                        border = BorderStroke(1.dp, VaultCyanPrimary.copy(alpha = 0.45f)),
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp)
+                            .height(46.dp)
                             .testTag("export_self_heal_button")
                     ) {
                         Icon(
@@ -478,16 +495,22 @@ fun VaultSecuritySettingsTab(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Export .sys_vault_data", color = VaultCyanPrimary, fontSize = 12.sp)
+                        Text(
+                            text = strings.exportSysVaultDataBtn,
+                            color = VaultCyanPrimary,
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
 
                     OutlinedButton(
                         onClick = onImportSelfHealingArchive,
                         shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, VaultEmeraldSuccess.copy(alpha = 0.5f)),
+                        border = BorderStroke(1.dp, VaultEmeraldSuccess.copy(alpha = 0.45f)),
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp)
+                            .height(46.dp)
                             .testTag("import_self_heal_button")
                     ) {
                         Icon(
@@ -497,99 +520,137 @@ fun VaultSecuritySettingsTab(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Restore Bundle", color = VaultEmeraldSuccess, fontSize = 12.sp)
+                        Text(
+                            text = strings.restoreBundleBtn,
+                            color = VaultEmeraldSuccess,
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(28.dp))
     }
 }
 
 @Composable
-private fun RootEnvironmentSecurityCard(
+private fun LanguageAndPrivacyCard(
+    currentLanguage: AppLanguage,
     report: RootSecurityDetector.EnvironmentSecurityReport,
     flagSecureEnabled: Boolean,
     isStreamingEmulator: Boolean,
+    onSelectLanguage: (AppLanguage) -> Unit,
     onToggleFlagSecure: (Boolean) -> Unit
 ) {
-    val bgColor = if (report.isRootOrHookDetected) {
-        VaultAmberWarning.copy(alpha = 0.14f)
-    } else {
-        VaultEmeraldSuccess.copy(alpha = 0.12f)
-    }
-    val borderColor = if (report.isRootOrHookDetected) {
-        VaultAmberWarning.copy(alpha = 0.55f)
-    } else {
-        VaultEmeraldSuccess.copy(alpha = 0.45f)
-    }
+    val strings = LocalAppStrings.current
 
     Surface(
-        color = bgColor,
+        color = VaultSurface,
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, borderColor),
+        border = BorderStroke(1.dp, VaultBorderSubtle),
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("root_security_banner")
+            .testTag("language_switcher_card")
     ) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Icon(
-                    imageVector = if (report.isRootOrHookDetected) Icons.Default.WarningAmber else Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = if (report.isRootOrHookDetected) VaultAmberWarning else VaultEmeraldSuccess,
-                    modifier = Modifier.size(22.dp)
-                )
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = if (report.isRootOrHookDetected) {
-                            "Root / Hook Environment Risk Notice"
-                        } else {
-                            "Environment Integrity Verified • Auto-Lock Active"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                        color = if (report.isRootOrHookDetected) VaultAmberWarning else VaultEmeraldSuccess
-                    )
-                    Text(
-                        text = if (report.isRootOrHookDetected) {
-                            "Privileged Root (su/Magisk) or Xposed hooks were detected (${report.findings.joinToString()}). System-level FLAG_SECURE screenshot protection could be bypassed by root processes."
-                        } else {
-                            "No su binaries, Magisk mounts, or Xposed hooks detected. Lifecycle.onStop() instant-wipes the MasterKey via Arrays.fill."
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = CalcTextPrimary
-                    )
-                }
-            }
-
+            // Language selector row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Hardware Window FLAG_SECURE",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = CalcTextPrimary
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Translate,
+                        contentDescription = null,
+                        tint = VaultCyanPrimary,
+                        modifier = Modifier.size(20.dp)
                     )
-                    Text(
-                        text = if (isStreamingEmulator) {
-                            "Cloud Streaming Emulator detected: keep OFF while previewing in browser (enabling blacks out video stream)"
-                        } else {
-                            "Blocks screenshots, ADB screenrecord & recents previews"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = CalcTextSecondary
-                    )
+                    Column {
+                        Text(
+                            text = strings.languageCardTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = CalcTextPrimary
+                        )
+                        Text(
+                            text = strings.languageCardSubtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CalcTextSecondary
+                        )
+                    }
                 }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    AppLanguage.entries.forEach { lang ->
+                        val selected = currentLanguage == lang
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSelectLanguage(lang) },
+                            label = {
+                                Text(
+                                    text = lang.nativeLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    maxLines = 1
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = VaultCyanPrimary,
+                                selectedLabelColor = Color(0xFF06202B)
+                            ),
+                            modifier = Modifier.testTag("select_lang_${lang.code}")
+                        )
+                    }
+                }
+            }
+
+            // Screenshot protection toggle row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("root_security_banner"),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = if (report.isRootOrHookDetected) Icons.Default.WarningAmber else Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = if (report.isRootOrHookDetected) VaultAmberWarning else VaultEmeraldSuccess,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Column {
+                        Text(
+                            text = strings.hardwareFlagSecureTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = CalcTextPrimary
+                        )
+                        Text(
+                            text = if (isStreamingEmulator) {
+                                strings.hardwareFlagSecureEmulatorSub
+                            } else {
+                                strings.hardwareFlagSecureDeviceSub
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CalcTextSecondary
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(8.dp))
                 Switch(
                     checked = flagSecureEnabled,
                     onCheckedChange = onToggleFlagSecure,
@@ -602,33 +663,28 @@ private fun RootEnvironmentSecurityCard(
 }
 
 @Composable
-private fun BinaryHeaderInspectorCard(
+private fun SpaceOverviewCard(
     session: VaultSessionManager.ActiveVaultSession,
     spaceMeta: VaultSpaceMetaEntity?,
     totalSpacesCount: Int,
     totalFilesCount: Int,
     totalPlainBytes: Long
 ) {
+    val strings = LocalAppStrings.current
+    var showTechnicalDetails by rememberSaveable { mutableStateOf(false) }
     val info = session.headerInfo
-    val saltHex = remember(info.salt) {
-        info.salt.joinToString("") { "%02X".format(it) }
-    }
-    val nonceHex = remember(info.mkNonce) {
-        info.mkNonce.joinToString("") { "%02X".format(it) }
-    }
-    val wrappedMkPreview = remember(info.wrappedMk) {
-        info.wrappedMk.take(12).joinToString("") { "%02X".format(it) } + "…"
-    }
 
     Surface(
-        color = VaultSurfaceElevated,
-        shape = RoundedCornerShape(18.dp),
+        color = VaultSurface,
+        shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, VaultBorderSubtle),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { showTechnicalDetails = !showTechnicalDetails }
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -637,53 +693,70 @@ private fun BinaryHeaderInspectorCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Shield,
                         contentDescription = null,
                         tint = VaultCyanPrimary,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(20.dp)
                     )
-                    Text(
-                        text = "128-BYTE ENVELOPE HEADER TELEMETRY",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = VaultCyanPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column {
+                        Text(
+                            text = spaceMeta?.spaceAlias ?: strings.headerTelemetryTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = CalcTextPrimary
+                        )
+                        Text(
+                            text = "$totalFilesCount files · ${formatByteSize(totalPlainBytes)} · $totalSpacesCount space(s)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CalcTextSecondary
+                        )
+                    }
                 }
-                Surface(
-                    color = if (spaceMeta?.isDecoy == true) VaultPurpleDecoy.copy(alpha = 0.2f) else VaultEmeraldSuccess.copy(alpha = 0.2f),
-                    shape = RoundedCornerShape(6.dp)
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        text = if (spaceMeta?.isDecoy == true) "DECOY SPACE" else "PRIMARY SPACE",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (spaceMeta?.isDecoy == true) VaultPurpleDecoy else VaultEmeraldSuccess,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                    Surface(
+                        color = if (spaceMeta?.isDecoy == true) VaultPurpleDecoy.copy(alpha = 0.16f) else VaultEmeraldSuccess.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = if (spaceMeta?.isDecoy == true) strings.decoySpaceBadge else strings.primarySpaceBadge,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (spaceMeta?.isDecoy == true) VaultPurpleDecoy else VaultEmeraldSuccess,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                        )
+                    }
+                    Icon(
+                        imageVector = if (showTechnicalDetails) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        tint = CalcTextMuted,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
 
-            Text(
-                text = """
-                    [0x00..0x07] Magic      : CLCVLT01 (8B ASCII)
-                    [0x08..0x17] Argon2 Salt: $saltHex (16B)
-                    [0x18..0x23] Argon2id   : m=${info.memoryCostKb}KB, t=${info.timeCost}, p=${info.parallelism}
-                    [0x24..0x2F] MK_Nonce   : $nonceHex (12B GCM IV)
-                    [0x30..0x5F] Wrapped_MK : $wrappedMkPreview (48B = 32B MK + 16B Tag)
-                    [0x60..0x7F] Reserved   : 32B CSPRNG Padding
-                    ------------------------------------------------
-                    Active Header File      : spaces/${session.spaceId}.header (128 Bytes)
-                    SQLCipher Metadata DB   : db/${session.spaceId}.db (AES-256)
-                    Provisioned Spaces Pool : $totalSpacesCount independent .header file(s)
-                    Encrypted Blobs in Space: $totalFilesCount files (${formatByteSize(totalPlainBytes)})
-                """.trimIndent(),
-                fontFamily = JetBrainsMonoFamily,
-                fontSize = 11.sp,
-                lineHeight = 16.sp,
-                color = CalcTextSecondary
-            )
+            AnimatedVisibility(visible = showTechnicalDetails) {
+                Surface(
+                    color = VaultSurfaceElevated,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Space ID : ${session.spaceId}.header (128B)\n" +
+                            "KDF      : Argon2id (${info.memoryCostKb / 1024}MB, t=${info.timeCost}, p=${info.parallelism})\n" +
+                            "Cipher   : AES-256-GCM + SQLCipher",
+                        fontFamily = JetBrainsMonoFamily,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        color = CalcTextSecondary,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+            }
         }
     }
 }

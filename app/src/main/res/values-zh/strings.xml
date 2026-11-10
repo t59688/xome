@@ -1,0 +1,23 @@
+<resources>
+    <string name="app_name">Xome</string>
+    <string name="calc_title">科学计算器</string>
+    <string name="calc_deg">角度</string>
+    <string name="calc_rad">弧度</string>
+    <string name="calc_history_empty">暂无计算记录</string>
+    <string name="onboarding_title">初始化主加密空间</string>
+    <string name="onboarding_subtitle">设置 4–16 位触发序列，在计算器输入该序列并按 = 键即可解锁。</string>
+    <string name="onboarding_pin_label">解锁序列（如 1314）</string>
+    <string name="onboarding_pin_confirm_label">确认解锁序列</string>
+    <string name="onboarding_create_btn">创建 Argon2id + AES-256-GCM 加密空间</string>
+    <string name="vault_title">私密加密空间</string>
+    <string name="vault_lock_now">立即锁定</string>
+    <string name="vault_import_files">导入任意文件</string>
+    <string name="vault_import_photos">相册快速多选</string>
+    <string name="vault_new_folder">新建文件夹</string>
+    <string name="vault_settings">多空间与安全</string>
+    <string name="vault_empty_folder">当前加密目录为空</string>
+    <string name="vault_change_pin">无重加密秒级改密</string>
+    <string name="vault_create_decoy">创建独立私密/诱饵空间</string>
+    <string name="vault_root_warning">检测到 Root/Hook 环境：高权限进程可能绕过系统防截屏保护。</string>
+    <string name="vault_root_clean">运行环境安全：未检测到 Root 且防截屏保护已就绪</string>
+</resources>

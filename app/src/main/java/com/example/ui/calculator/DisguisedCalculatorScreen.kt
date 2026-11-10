@@ -44,14 +44,14 @@ import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -64,9 +64,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -83,6 +83,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.CalcAccentCyan
 import com.example.ui.theme.CalcAccentOrange
 import com.example.ui.theme.CalcChassisBg
@@ -122,11 +123,13 @@ fun DisguisedCalculatorScreen(
     onToggleSciPad: () -> Unit,
     onToggleHistory: () -> Unit,
     onClearHistory: () -> Unit,
+    onToggleLanguage: () -> Unit,
     onProvisionPrimarySpace: (pin: String, confirm: String, alias: String, stayInCalc: Boolean) -> Unit,
     onDismissOnboarding: () -> Unit,
     onOpenOnboarding: () -> Unit,
     onImportSelfHealingArchive: (android.net.Uri) -> Unit
 ) {
+    val strings = LocalAppStrings.current
     val archiveRestoreLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -146,29 +149,27 @@ fun DisguisedCalculatorScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .widthIn(max = 560.dp)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .widthIn(max = 540.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Top Precision Hardware Status Header
-            CalculatorHardwareHeader(
+            CalculatorTopToolbar(
                 isDegreeMode = calcState.isDegreeMode,
                 isScientificExpanded = calcState.isScientificExpanded,
                 isHistoryVisible = calcState.isHistoryVisible,
-                isVerifyingBlindSequence = calcState.isVerifyingBlindSequence,
                 totalSpacesCount = totalProvisionedSpaces,
                 onToggleDegRad = onToggleDegRad,
                 onToggleSciPad = onToggleSciPad,
                 onToggleHistory = onToggleHistory,
+                onToggleLanguage = onToggleLanguage,
                 onOpenSetupIfEmpty = onOpenOnboarding
             )
 
-            // Non-blocking First-Launch Vault Setup Banner when no .header exists yet
             AnimatedVisibility(visible = needsOnboarding) {
                 Surface(
                     color = VaultSurfaceElevated,
                     shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, VaultCyanPrimary.copy(alpha = 0.55f)),
+                    border = BorderStroke(1.dp, VaultBorderSubtle),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 6.dp)
@@ -177,37 +178,38 @@ fun DisguisedCalculatorScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "FIRST LAUNCH: TYPE 1314= TO UNLOCK",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = VaultCyanPrimary,
-                                fontWeight = FontWeight.Bold
+                                text = strings.firstLaunchBannerTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontSize = 14.sp,
+                                color = CalcTextPrimary,
+                                fontWeight = FontWeight.SemiBold
                             )
                             Text(
-                                text = "Or tap Configure to set a custom Argon2id sequence",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontSize = 12.sp,
+                                text = strings.firstLaunchBannerSubtitle,
+                                style = MaterialTheme.typography.labelSmall,
                                 color = CalcTextSecondary
                             )
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Surface(
+                        Spacer(modifier = Modifier.width(10.dp))
+                        IconButton(
                             onClick = onOpenOnboarding,
-                            color = VaultCyanPrimary,
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.testTag("open_custom_setup_button")
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(VaultCyanPrimary.copy(alpha = 0.16f))
+                                .testTag("open_custom_setup_button")
                         ) {
-                            Text(
-                                text = "Configure",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF001F26),
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = strings.configureBtn,
+                                tint = VaultCyanPrimary,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
@@ -216,7 +218,6 @@ fun DisguisedCalculatorScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Main Tactile LCD Readout Display
             CalculatorLcdDisplay(
                 expression = calcState.expression,
                 livePreview = calcState.livePreview,
@@ -230,7 +231,6 @@ fun DisguisedCalculatorScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // History Drawer or Keypad
             AnimatedVisibility(
                 visible = calcState.isHistoryVisible,
                 enter = expandVertically() + fadeIn(),
@@ -246,20 +246,17 @@ fun DisguisedCalculatorScreen(
                     onClearHistory = onClearHistory,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(210.dp)
+                        .height(190.dp)
                         .padding(bottom = 8.dp)
                 )
             }
 
-            // Expandable Scientific Function Row Matrix
             AnimatedVisibility(
                 visible = calcState.isScientificExpanded,
                 enter = expandVertically() + fadeIn(),
                 exit = shrinkVertically() + fadeOut()
             ) {
                 ScientificFunctionMatrix(
-                    isDegreeMode = calcState.isDegreeMode,
-                    onToggleDegRad = onToggleDegRad,
                     onInputToken = onInputToken,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -267,7 +264,6 @@ fun DisguisedCalculatorScreen(
                 )
             }
 
-            // Primary 4x5 Tactile Arithmetic Keypad
             PrimaryArithmeticKeypad(
                 onInputToken = onInputToken,
                 onClear = onClear,
@@ -279,7 +275,6 @@ fun DisguisedCalculatorScreen(
             )
         }
 
-        // Optional Custom Sequence Setup Sheet (Opened when user taps INIT VAULT or Configure)
         if (showSetupDialog) {
             ModalBottomSheet(
                 onDismissRequest = onDismissOnboarding,
@@ -303,17 +298,19 @@ fun DisguisedCalculatorScreen(
 }
 
 @Composable
-private fun CalculatorHardwareHeader(
+private fun CalculatorTopToolbar(
     isDegreeMode: Boolean,
     isScientificExpanded: Boolean,
     isHistoryVisible: Boolean,
-    isVerifyingBlindSequence: Boolean,
     totalSpacesCount: Int,
     onToggleDegRad: () -> Unit,
     onToggleSciPad: () -> Unit,
     onToggleHistory: () -> Unit,
+    onToggleLanguage: () -> Unit,
     onOpenSetupIfEmpty: () -> Unit
 ) {
+    val strings = LocalAppStrings.current
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -321,38 +318,38 @@ private fun CalculatorHardwareHeader(
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.clickable(enabled = totalSpacesCount == 0) { onOpenSetupIfEmpty() }
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Subtle LED indicator dot
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (isVerifyingBlindSequence) CalcAccentOrange
-                        else if (totalSpacesCount > 0) VaultEmeraldSuccess.copy(alpha = 0.75f)
-                        else CalcTextMuted
-                    )
-            )
-            Text(
-                text = "XOME // FX-991EX",
-                style = MaterialTheme.typography.labelLarge,
-                color = CalcTextSecondary,
-                fontWeight = FontWeight.Bold
-            )
+            Surface(
+                onClick = onToggleDegRad,
+                color = CalcDisplayBg,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, CalcDisplayBorder),
+                modifier = Modifier.testTag("calc_deg_rad_toggle")
+            ) {
+                Text(
+                    text = if (isDegreeMode) "DEG" else "RAD",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontFamily = JetBrainsMonoFamily,
+                    color = if (isDegreeMode) CalcAccentOrange else CalcAccentCyan,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                )
+            }
+
             if (totalSpacesCount == 0) {
-                Surface(
-                    color = CalcAccentOrange.copy(alpha = 0.16f),
-                    shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(1.dp, CalcAccentOrange.copy(alpha = 0.45f)),
-                    modifier = Modifier.testTag("setup_vault_badge")
+                IconButton(
+                    onClick = onOpenSetupIfEmpty,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(CalcDisplayBg)
+                        .testTag("setup_vault_badge")
                 ) {
-                    Text(
-                        text = "INIT VAULT",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = CalcAccentOrange,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    Icon(
+                        imageVector = Icons.Default.Key,
+                        contentDescription = strings.initVaultBadge,
+                        tint = CalcAccentOrange,
+                        modifier = Modifier.size(17.dp)
                     )
                 }
             }
@@ -362,18 +359,19 @@ private fun CalculatorHardwareHeader(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Surface(
-                onClick = onToggleDegRad,
-                color = CalcDisplayBg,
-                shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, CalcDisplayBorder),
-                modifier = Modifier.testTag("calc_deg_rad_toggle")
+            IconButton(
+                onClick = onToggleLanguage,
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(CalcDisplayBg)
+                    .testTag("calc_lang_toggle")
             ) {
-                Text(
-                    text = if (isDegreeMode) "DEG" else "RAD",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = if (isDegreeMode) CalcAccentOrange else CalcAccentCyan,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                Icon(
+                    imageVector = Icons.Default.Translate,
+                    contentDescription = "Switch Language",
+                    tint = CalcTextSecondary,
+                    modifier = Modifier.size(18.dp)
                 )
             }
 
@@ -381,13 +379,13 @@ private fun CalculatorHardwareHeader(
                 onClick = onToggleSciPad,
                 modifier = Modifier
                     .size(38.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(10.dp))
                     .background(if (isScientificExpanded) CalcOperatorKeyBg else CalcDisplayBg)
                     .testTag("calc_sci_toggle")
             ) {
                 Icon(
                     imageVector = Icons.Default.Functions,
-                    contentDescription = "Toggle scientific keypad",
+                    contentDescription = "Scientific keypad",
                     tint = if (isScientificExpanded) CalcAccentCyan else CalcTextSecondary,
                     modifier = Modifier.size(18.dp)
                 )
@@ -397,13 +395,13 @@ private fun CalculatorHardwareHeader(
                 onClick = onToggleHistory,
                 modifier = Modifier
                     .size(38.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(10.dp))
                     .background(if (isHistoryVisible) CalcOperatorKeyBg else CalcDisplayBg)
                     .testTag("calc_history_toggle")
             ) {
                 Icon(
                     imageVector = Icons.Default.History,
-                    contentDescription = "Calculation history",
+                    contentDescription = "History",
                     tint = if (isHistoryVisible) CalcAccentOrange else CalcTextSecondary,
                     modifier = Modifier.size(18.dp)
                 )
@@ -421,46 +419,28 @@ private fun CalculatorLcdDisplay(
     statusBanner: XomeViewModel.StatusBanner?,
     modifier: Modifier = Modifier
 ) {
+    val strings = LocalAppStrings.current
     val scrollState = rememberScrollState()
 
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .testTag("calculator_display"),
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(24.dp),
         color = CalcDisplayBg,
-        border = BorderStroke(1.5.dp, CalcDisplayBorder)
+        border = BorderStroke(1.dp, CalcDisplayBorder)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFF141A26),
-                            Color(0xFF0E121A)
-                        )
-                    )
-                )
-                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .padding(horizontal = 22.dp, vertical = 18.dp)
         ) {
-            // Top micro telemetry line inside LCD
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopStart),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            if (isVerifying) {
                 Text(
-                    text = if (isDegreeMode) "TRIG: DEG" else "TRIG: RAD",
+                    text = strings.calcEngineBusy,
                     style = MaterialTheme.typography.labelSmall,
-                    color = CalcTextMuted
-                )
-                Text(
-                    text = if (isVerifying) "MATH ENGINE // BUSY" else "FLOAT-64 // READY",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (isVerifying) CalcAccentOrange else CalcTextMuted
+                    color = CalcAccentOrange,
+                    modifier = Modifier.align(Alignment.TopEnd)
                 )
             }
 
@@ -468,9 +448,7 @@ private fun CalculatorLcdDisplay(
                 Surface(
                     color = VaultEmeraldSuccess.copy(alpha = 0.14f),
                     shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 22.dp)
+                    modifier = Modifier.align(Alignment.TopStart)
                 ) {
                     Text(
                         text = statusBanner.message,
@@ -483,7 +461,6 @@ private fun CalculatorLcdDisplay(
                 }
             }
 
-            // Main Expression & Live Preview aligned bottom-end
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -499,11 +476,11 @@ private fun CalculatorLcdDisplay(
                     Text(
                         text = expression.ifEmpty { "0" },
                         fontFamily = JetBrainsMonoFamily,
-                        fontWeight = FontWeight.Bold,
+                        fontWeight = FontWeight.SemiBold,
                         fontSize = when {
                             expression.length > 16 -> 28.sp
                             expression.length > 11 -> 36.sp
-                            else -> 46.sp
+                            else -> 48.sp
                         },
                         color = CalcTextPrimary,
                         textAlign = TextAlign.End,
@@ -514,12 +491,13 @@ private fun CalculatorLcdDisplay(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
+                val localizedPreview = if (livePreview == "Syntax Error") strings.syntaxError else livePreview
                 Text(
-                    text = if (livePreview.isNotEmpty()) "= $livePreview" else " ",
+                    text = if (localizedPreview.isNotEmpty()) "= $localizedPreview" else " ",
                     fontFamily = JetBrainsMonoFamily,
                     fontWeight = FontWeight.Medium,
                     fontSize = 20.sp,
-                    color = if (livePreview == "Syntax Error") CalcClearKeyText else CalcAccentCyan.copy(alpha = 0.85f),
+                    color = if (livePreview == "Syntax Error") CalcClearKeyText else CalcTextSecondary,
                     textAlign = TextAlign.End,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -537,20 +515,22 @@ private fun CalculatorHistoryPanel(
     onClearHistory: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val strings = LocalAppStrings.current
+
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         color = CalcDisplayBg,
         border = BorderStroke(1.dp, CalcDisplayBorder)
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "CALCULATION TAPE",
+                    text = strings.calculationTapeTitle,
                     style = MaterialTheme.typography.labelLarge,
                     color = CalcTextSecondary
                 )
@@ -559,14 +539,14 @@ private fun CalculatorHistoryPanel(
                         onClick = onClearHistory,
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                        Text("CLEAR", style = MaterialTheme.typography.labelSmall, color = CalcClearKeyText)
+                        Text(strings.clearBtn, style = MaterialTheme.typography.labelSmall, color = CalcClearKeyText)
                     }
                 }
             }
             if (history.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        text = "No recent expressions evaluated",
+                        text = strings.noRecentCalculations,
                         style = MaterialTheme.typography.bodyMedium,
                         color = CalcTextMuted
                     )
@@ -585,7 +565,8 @@ private fun CalculatorHistoryPanel(
                         ) {
                             Text(
                                 text = item.expression,
-                                style = MaterialTheme.typography.labelLarge,
+                                fontFamily = JetBrainsMonoFamily,
+                                fontSize = 14.sp,
                                 color = CalcTextSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
@@ -593,9 +574,10 @@ private fun CalculatorHistoryPanel(
                             )
                             Text(
                                 text = "= ${item.result}",
-                                style = MaterialTheme.typography.labelLarge,
+                                fontFamily = JetBrainsMonoFamily,
+                                fontSize = 14.sp,
                                 color = CalcAccentOrange,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
@@ -607,8 +589,6 @@ private fun CalculatorHistoryPanel(
 
 @Composable
 private fun ScientificFunctionMatrix(
-    isDegreeMode: Boolean,
-    onToggleDegRad: () -> Unit,
     onInputToken: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -675,7 +655,7 @@ private fun ScientificChipButton(
         shape = RoundedCornerShape(12.dp),
         color = CalcSciKeyBg,
         border = BorderStroke(1.dp, CalcDisplayBorder),
-        modifier = modifier.height(42.dp)
+        modifier = modifier.height(40.dp)
     ) {
         Box(contentAlignment = Alignment.Center) {
             Text(
@@ -701,7 +681,6 @@ private fun PrimaryArithmeticKeypad(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Row 1: AC, Backspace, %, ÷
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -730,7 +709,7 @@ private fun PrimaryArithmeticKeypad(
                         imageVector = Icons.AutoMirrored.Filled.Backspace,
                         contentDescription = "Backspace",
                         tint = CalcTextPrimary,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(21.dp)
                     )
                 }
             }
@@ -754,7 +733,6 @@ private fun PrimaryArithmeticKeypad(
             )
         }
 
-        // Row 2: 7, 8, 9, ×
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -781,7 +759,6 @@ private fun PrimaryArithmeticKeypad(
             )
         }
 
-        // Row 3: 4, 5, 6, −
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -808,7 +785,6 @@ private fun PrimaryArithmeticKeypad(
             )
         }
 
-        // Row 4: 1, 2, 3, +
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -835,7 +811,6 @@ private fun PrimaryArithmeticKeypad(
             )
         }
 
-        // Row 5: 00, 0, ., =
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -867,7 +842,6 @@ private fun PrimaryArithmeticKeypad(
                     .weight(1f)
                     .testTag("calc_key_dot")
             )
-            // The Covert Trigger & Equals Button
             Surface(
                 onClick = onEquals,
                 shape = RoundedCornerShape(16.dp),
@@ -926,29 +900,35 @@ private fun FirstLaunchVaultSetupSheet(
     onSkipToCalculator: () -> Unit,
     onRestoreArchive: () -> Unit
 ) {
+    val strings = LocalAppStrings.current
     var sequence by rememberSaveable { mutableStateOf("1314") }
     var confirmSequence by rememberSaveable { mutableStateOf("1314") }
-    var spaceAlias by rememberSaveable { mutableStateOf("Primary Sovereign Vault") }
+    var spaceAlias by rememberSaveable { mutableStateOf(strings.defaultPrimarySpaceAlias) }
+
+    LaunchedEffect(strings.language) {
+        if (spaceAlias in listOf("Main Space", "主空间", "Primary Sovereign Vault", "主加密私密空间")) {
+            spaceAlias = strings.defaultPrimarySpaceAlias
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 22.dp, vertical = 18.dp)
+            .padding(horizontal = 22.dp, vertical = 20.dp)
             .navigationBarsPadding(),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Hero Banner Illustration
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(136.dp)
+                .height(110.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .border(1.dp, VaultBorderSubtle, RoundedCornerShape(18.dp))
         ) {
             Image(
                 painter = painterResource(id = R.drawable.img_vault_banner_1794279611736),
-                contentDescription = "Cryptographic Envelope Vault Banner",
+                contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
@@ -972,37 +952,30 @@ private fun FirstLaunchVaultSetupSheet(
                     imageVector = Icons.Default.Security,
                     contentDescription = null,
                     tint = VaultCyanPrimary,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(18.dp)
                 )
                 Text(
-                    text = "ARGON2ID + AES-256-GCM ENVELOPE VAULT",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = VaultCyanPrimary,
-                    fontWeight = FontWeight.Bold
+                    text = strings.onboardingTitle,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = CalcTextPrimary,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
         }
 
         Text(
-            text = "Initialize Primary Vault Space",
-            style = MaterialTheme.typography.headlineMedium,
-            color = CalcTextPrimary
-        )
-
-        Text(
-            text = "No existing .header files were detected in .sys_vault_data/spaces/. Configure your secret calculator trigger sequence below. Typing this sequence and pressing '=' in the calculator unlocks your encrypted space.",
+            text = strings.onboardingSubtitle,
             style = MaterialTheme.typography.bodyMedium,
             color = CalcTextSecondary
         )
 
-        // Quick preset chips
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Presets:",
+                text = strings.presetsLabel,
                 style = MaterialTheme.typography.labelSmall,
                 color = CalcTextMuted
             )
@@ -1017,7 +990,7 @@ private fun FirstLaunchVaultSetupSheet(
                         Text(preset, style = MaterialTheme.typography.labelSmall)
                     },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = VaultCyanPrimary.copy(alpha = 0.2f),
+                        selectedContainerColor = VaultCyanPrimary.copy(alpha = 0.18f),
                         selectedLabelColor = VaultCyanPrimary
                     )
                 )
@@ -1027,7 +1000,7 @@ private fun FirstLaunchVaultSetupSheet(
         OutlinedTextField(
             value = spaceAlias,
             onValueChange = { spaceAlias = it },
-            label = { Text("Space Designation") },
+            label = { Text(strings.spaceDesignationLabel) },
             singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()
@@ -1045,7 +1018,7 @@ private fun FirstLaunchVaultSetupSheet(
             OutlinedTextField(
                 value = sequence,
                 onValueChange = { sequence = it },
-                label = { Text("Trigger Sequence (4–16 chars)") },
+                label = { Text(strings.triggerSequenceLabel) },
                 leadingIcon = {
                     Icon(Icons.Default.Key, contentDescription = null, tint = CalcAccentOrange)
                 },
@@ -1062,7 +1035,7 @@ private fun FirstLaunchVaultSetupSheet(
             OutlinedTextField(
                 value = confirmSequence,
                 onValueChange = { confirmSequence = it },
-                label = { Text("Confirm Sequence") },
+                label = { Text(strings.confirmSequenceLabel) },
                 leadingIcon = {
                     Icon(Icons.Default.Lock, contentDescription = null, tint = VaultCyanPrimary)
                 },
@@ -1077,115 +1050,104 @@ private fun FirstLaunchVaultSetupSheet(
             )
         }
 
-        // Binary spec summary card
-        Surface(
-            color = VaultSurfaceElevated,
-            shape = RoundedCornerShape(12.dp),
-            border = BorderStroke(1.dp, VaultBorderSubtle),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.VerifiedUser,
-                        contentDescription = null,
-                        tint = VaultEmeraldSuccess,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = "BINARY ENVELOPE SPECIFICATION",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = VaultEmeraldSuccess,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Text(
-                    text = "• Header: 128 Bytes (Magic CLCVLT01 + 16B Salt + Argon2id + 48B Wrapped_MK)\n• Database: SQLCipher 256-bit AES (db/<hex>.db)\n• File Blobs: 76B VBLK Header + 64KB Streaming AES-256-GCM Chunks",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = CalcTextSecondary
-                )
-            }
-        }
-
         if (errorText != null) {
             Text(
                 text = errorText,
                 style = MaterialTheme.typography.bodyMedium,
-                color = CalcClearKeyText
+                color = CalcClearKeyText,
+                modifier = Modifier.testTag("onboarding_error_text")
             )
         }
 
-        Button(
-            onClick = { onProvision(sequence, confirmSequence, spaceAlias, false) },
-            enabled = !isProvisioning,
-            shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = VaultCyanPrimary,
-                contentColor = Color(0xFF001F26)
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp)
-                .testTag("onboarding_provision_button")
-        ) {
-            if (isProvisioning) {
+        if (isProvisioning) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(20.dp),
-                    strokeWidth = 2.dp,
-                    color = Color(0xFF001F26)
+                    color = VaultCyanPrimary,
+                    strokeWidth = 2.5.dp,
+                    modifier = Modifier.size(22.dp)
                 )
-                Spacer(modifier = Modifier.width(10.dp))
+                Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = "Deriving Argon2id KEK & Sealing 128B Header...",
-                    fontWeight = FontWeight.Bold
-                )
-            } else {
-                Text(
-                    text = "Provision Primary Space & Enter Vault",
-                    fontWeight = FontWeight.Bold
+                    text = strings.derivingKekProgress,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = VaultCyanPrimary
                 )
             }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            OutlinedButton(
-                onClick = onRestoreArchive,
-                enabled = !isProvisioning,
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, VaultBorderSubtle),
+        } else {
+            Button(
+                onClick = {
+                    onProvision(sequence, confirmSequence, spaceAlias, false)
+                },
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = VaultCyanPrimary,
+                    contentColor = Color(0xFF06202B)
+                ),
                 modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp)
-                    .testTag("onboarding_restore_button")
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .testTag("onboarding_provision_button")
             ) {
-                Icon(
-                    imageVector = Icons.Default.Restore,
-                    contentDescription = null,
-                    tint = VaultCyanPrimary,
-                    modifier = Modifier.size(16.dp)
+                Text(
+                    text = strings.provisionPrimarySpaceBtn,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Self-Heal Restore", color = CalcTextPrimary, fontSize = 12.sp)
             }
 
-            TextButton(
-                onClick = onSkipToCalculator,
-                enabled = !isProvisioning,
-                modifier = Modifier
-                    .weight(1f)
-                    .height(48.dp)
-                    .testTag("onboarding_skip_button")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text("Use Disguised Calc Only", color = CalcTextSecondary, fontSize = 12.sp)
+                OutlinedButton(
+                    onClick = onRestoreArchive,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, VaultBorderSubtle),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp)
+                        .testTag("onboarding_restore_archive_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Restore,
+                        contentDescription = null,
+                        tint = VaultCyanPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = strings.selfHealRestoreBtn,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = CalcTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onSkipToCalculator,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, VaultBorderSubtle),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(46.dp)
+                        .testTag("onboarding_skip_button")
+                ) {
+                    Text(
+                        text = strings.useDisguisedCalcOnlyBtn,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = CalcTextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }

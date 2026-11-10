@@ -94,6 +94,7 @@ import com.example.crypto.RandomAccessDecryptedStream
 import com.example.crypto.VaultSessionManager
 import com.example.data.VaultFileEntity
 import com.example.storage.VaultStorageManager
+import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.CalcAccentOrange
 import com.example.ui.theme.CalcClearKeyText
 import com.example.ui.theme.CalcTextMuted
@@ -135,6 +136,7 @@ fun InMemoryImageViewerOverlay(
     onShredFile: (VaultFileEntity) -> Unit
 ) {
     BackHandler { onClose() }
+    val strings = LocalAppStrings.current
 
     if (imageFiles.isEmpty()) {
         LaunchedEffect(Unit) { onClose() }
@@ -150,7 +152,7 @@ fun InMemoryImageViewerOverlay(
     )
 
     var showChrome by remember { mutableStateOf(true) }
-    var showStreamTelemetry by remember { mutableStateOf(true) }
+    var showStreamTelemetry by remember { mutableStateOf(false) }
     var isCurrentPageZoomed by remember { mutableStateOf(false) }
 
     // Page-scoped transformation triggers
@@ -248,7 +250,7 @@ fun InMemoryImageViewerOverlay(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "RAM STREAM (${pagerState.currentPage + 1}/${imageFiles.size}) • ZERO DISK CACHE",
+                                text = strings.ramStreamZeroDiskSubtitle(pagerState.currentPage + 1, imageFiles.size),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = VaultEmeraldSuccess
                             )
@@ -411,7 +413,7 @@ fun InMemoryImageViewerOverlay(
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "1.0x FIT",
+                                text = strings.fit1xBtn,
                                 style = MaterialTheme.typography.labelLarge,
                                 color = VaultCyanPrimary,
                                 fontWeight = FontWeight.Bold
@@ -698,7 +700,7 @@ private fun InMemorySingleImagePage(
                 ) {
                     CircularProgressIndicator(color = VaultCyanPrimary)
                     Text(
-                        text = "Streaming 64KB AES-256-GCM chunks into RAM...",
+                        text = LocalAppStrings.current.streamingChunksIntoRam,
                         style = MaterialTheme.typography.labelLarge,
                         color = CalcTextSecondary
                     )
@@ -778,7 +780,7 @@ fun InMemoryDocumentViewerDialog(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "IN-MEMORY DECRYPTED STREAM • blobs/${fileEntity.blobFilename.take(10)}….dat",
+                            text = LocalAppStrings.current.inMemoryDecryptedStreamSubtitle(fileEntity.blobFilename.take(10)),
                             style = MaterialTheme.typography.labelSmall,
                             color = VaultCyanPrimary
                         )

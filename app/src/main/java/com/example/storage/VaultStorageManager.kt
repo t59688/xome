@@ -1,8 +1,11 @@
 package com.example.storage
 
+import android.app.PendingIntent
 import android.content.ContentResolver
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.content.IntentSender
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
@@ -36,21 +39,6 @@ import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Manages the physical vault directory structure:
- *
- * /sdcard/Documents/.sys_vault_data/ (with automatic Scoped Storage fallback + SAF Self-Healing Archive)
- *  ├── .nomedia
- *  ├── spaces/
- *  │    ├── 8f3a1b9c.header (128 Bytes)
- *  │    └── 4d2e7a1f.header (128 Bytes)
- *  ├── db/
- *  │    ├── 8f3a1b9c.db (SQLCipher encrypted)
- *  │    └── 4d2e7a1f.db
- *  └── blobs/
- *       ├── 7c4a8d09e1b2...dat (64KB chunked AES-256-GCM)
- *       └── 9e2f1a33c4d5...dat
- */
 object VaultStorageManager {
 
     const val VAULT_ROOT_DIR_NAME = ".sys_vault_data"
@@ -66,19 +54,28 @@ object VaultStorageManager {
         val isPublicDocumentsDirect: Boolean
     )
 
+    data class DeletableSourceHandle(
+        val originalUri: Uri,
+        val displayName: String,
+        val mimeType: String,
+        val size: Long,
+        val resolvedMediaStoreUri: Uri?,
+        val resolvedFilePath: String?
+    )
+
     data class ImportResult(
         val importedCount: Int,
-        val deletedOriginalsCount: Int,
         val totalBytesEncrypted: Long,
+        val pendingDeleteHandles: List<DeletableSourceHandle>,
         val errors: List<String>
     )
 
-    /**
-     * Resolves and ensures the `.sys_vault_data` directory structure exists.
-     * Attempts `/sdcard/Documents/.sys_vault_data` first per spec; if Android Scoped Storage
-     * blocks direct POSIX creation in shared storage, seamlessly resolves to external app Documents
-     * storage so zero permissions are required and operations never fail.
-     */
+    data class SourceDeletionOutcome(
+        val deletedImmediatelyCount: Int,
+        val pendingSystemDeleteIntentSender: IntentSender?,
+        val remainingHandlesCount: Int
+    )
+
     fun resolveVaultTree(context: Context): VaultDirectoryTree {
         val publicDocsRoot = File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
@@ -126,11 +123,6 @@ object VaultStorageManager {
         )
     }
 
-    /**
-     * Module 1 Self-Healing Detection:
-     * Checks if `spaces/<hex>.header` files already exist.
-     * If true, skips onboarding and enters Calculator directly for seamless unlock!
-     */
     fun listSpaceHeaderFiles(context: Context): List<File> {
         val tree = resolveVaultTree(context)
         return tree.spacesDir
@@ -147,9 +139,6 @@ object VaultStorageManager {
         return listSpaceHeaderFiles(context).isNotEmpty()
     }
 
-    /**
-     * Generates a random 8-character lowercase hexadecimal space ID (e.g. `8f3a1b9c`).
-     */
     private fun generateRandomSpaceId(spacesDir: File): String {
         while (true) {
             val bytes = ByteArray(4)
@@ -161,12 +150,6 @@ object VaultStorageManager {
         }
     }
 
-    /**
-     * Provisions a brand-new encrypted space (Primary or Decoy/Secondary):
-     * 1. Generates 256-bit MasterKey via SecureRandom (never changes for the lifetime of the space)
-     * 2. Derives KEK via Argon2id and writes 128-byte `spaces/<hex>.header`
-     * 3. Opens SQLCipher `db/<hex>.db` and seeds initial folders + sample encrypted files
-     */
     suspend fun provisionNewSpace(
         context: Context,
         pinChars: CharArray,
@@ -206,23 +189,22 @@ object VaultStorageManager {
                 )
             )
 
-            // Create default directory hierarchy inside SQLCipher DB
             val photosFolderId = dao.insertFolder(
                 VaultFolderEntity(
                     parentId = null,
-                    folderName = if (isDecoy) "Travel Snapshots" else "Confidential Visuals"
+                    folderName = if (isDecoy) "日常相册" else "私密相册"
                 )
             )
             val docsFolderId = dao.insertFolder(
                 VaultFolderEntity(
                     parentId = null,
-                    folderName = if (isDecoy) "Study Notes" else "Classified Specifications"
+                    folderName = if (isDecoy) "学习笔记" else "重要文档"
                 )
             )
             dao.insertFolder(
                 VaultFolderEntity(
                     parentId = null,
-                    folderName = if (isDecoy) "Receipts" else "Key Custody Ledger"
+                    folderName = if (isDecoy) "票据归档" else "财务账单"
                 )
             )
 
@@ -258,12 +240,6 @@ object VaultStorageManager {
         }
     }
 
-    /**
-     * Module 2 Blind-Match Authentication Interceptor:
-     * Iterates over all `spaces/<hex>.header` files, running Argon2id + AES-GCM tag verification.
-     * - If a space matches: opens its SQLCipher database and activates [VaultSessionManager].
-     * - If none match: returns null silently so the Calculator performs normal arithmetic.
-     */
     suspend fun tryBlindUnlock(
         context: Context,
         rawSequence: String
@@ -281,13 +257,12 @@ object VaultStorageManager {
                 if (unlockedMk != null) {
                     val dbFile = File(tree.dbDir, "${info.spaceId}.db")
                     val db = VaultDatabase.openSpaceDatabase(context, dbFile, unlockedMk)
-                    // Ensure space meta exists even after self-healing reinstall
                     val dao = db.vaultDao()
                     if (dao.getSpaceMetaSync() == null) {
                         dao.upsertSpaceMeta(
                             VaultSpaceMetaEntity(
                                 spaceId = info.spaceId,
-                                spaceAlias = "Restored Space (${info.spaceId.take(4)})",
+                                spaceAlias = "私密空间 (${info.spaceId.take(4)})",
                                 isDecoy = false
                             )
                         )
@@ -309,9 +284,6 @@ object VaultStorageManager {
         }
     }
 
-    /**
-     * Checks if a candidate PIN sequence already unlocks an existing space (prevents duplicate space PINs).
-     */
     suspend fun isSequenceAlreadyUsed(context: Context, sequence: String): Boolean =
         withContext(Dispatchers.Default) {
             val pinChars = sequence.toCharArray()
@@ -331,8 +303,11 @@ object VaultStorageManager {
         }
 
     /**
-     * Module 4 Full-Format File Import (Copy vs Move) with 64KB Streaming AES-256-GCM
-     * and In-Memory Encrypted WebP Thumbnail Generation.
+     * Module 4 Streaming File Import:
+     * Encrypts all selected URIs into 64KB AES-256-GCM `.dat` files, `fsync`s them,
+     * and commits their metadata into SQLCipher.
+     * If `moveAndWipeOriginal` is true, collects `DeletableSourceHandle`s so the UI can
+     * show the final confirmation prompt and reliably delete the source files.
      */
     suspend fun importUrisToVault(
         context: Context,
@@ -342,7 +317,7 @@ object VaultStorageManager {
         onProgress: (current: Int, total: Int, fileName: String) -> Unit = { _, _, _ -> }
     ): ImportResult = withContext(Dispatchers.IO) {
         val session = VaultSessionManager.activeSession.value
-            ?: return@withContext ImportResult(0, 0, 0L, listOf("Vault session is locked"))
+            ?: return@withContext ImportResult(0, 0L, emptyList(), listOf("Session locked"))
 
         val masterKey = session.borrowMasterKeyCopy()
         val tree = resolveVaultTree(context)
@@ -350,8 +325,8 @@ object VaultStorageManager {
         val dao = session.database.vaultDao()
 
         var importedCount = 0
-        var deletedCount = 0
         var totalBytes = 0L
+        val pendingHandles = mutableListOf<DeletableSourceHandle>()
         val errors = mutableListOf<String>()
 
         try {
@@ -363,7 +338,6 @@ object VaultStorageManager {
                 val targetBlobFile = File(tree.blobsDir, blobFilename)
 
                 try {
-                    // 1. Extract 200x200 WebP thumbnail in memory if image or video
                     val encryptedThumb = extractEncryptedThumbnailInMemory(
                         context = context,
                         uri = uri,
@@ -371,7 +345,6 @@ object VaultStorageManager {
                         masterKey = masterKey
                     )
 
-                    // 2. Stream original content through 64KB AES-256-GCM chunks into blobs/<uuid>.dat
                     val bytesWritten = resolver.openInputStream(uri)?.use { input ->
                         VaultCryptoEngine.encryptStreamToBlobFile(
                             masterKey = masterKey,
@@ -380,13 +353,13 @@ object VaultStorageManager {
                         )
                     } ?: throw IllegalStateException("Cannot open stream for ${meta.displayName}")
 
-                    // 3. Commit encrypted metadata to SQLCipher database
+                    val finalSize = if (bytesWritten > 0) bytesWritten else meta.size
                     dao.insertFile(
                         VaultFileEntity(
                             folderId = targetFolderId,
                             originalName = meta.displayName,
                             mimeType = meta.mimeType,
-                            originalSize = if (bytesWritten > 0) bytesWritten else meta.size,
+                            originalSize = finalSize,
                             blobFilename = blobFilename,
                             encryptedThumbnail = encryptedThumb,
                             importedAt = System.currentTimeMillis(),
@@ -397,12 +370,15 @@ object VaultStorageManager {
                     importedCount++
                     totalBytes += bytesWritten
 
-                    // 4. Move vs Copy: ONLY delete original after .dat fsync AND DB commit succeed
                     if (moveAndWipeOriginal) {
-                        val deleted = tryDeleteOriginalUri(context, uri)
-                        if (deleted) {
-                            deletedCount++
-                        }
+                        val handle = resolveDeletableHandle(
+                            context = context,
+                            uri = uri,
+                            displayName = meta.displayName,
+                            mimeType = meta.mimeType,
+                            size = finalSize
+                        )
+                        pendingHandles.add(handle)
                     }
                 } catch (e: Exception) {
                     if (targetBlobFile.exists()) {
@@ -417,15 +393,210 @@ object VaultStorageManager {
 
         ImportResult(
             importedCount = importedCount,
-            deletedOriginalsCount = deletedCount,
             totalBytesEncrypted = totalBytes,
+            pendingDeleteHandles = pendingHandles,
             errors = errors
         )
     }
 
     /**
-     * Creates a new encrypted text/markdown note directly in memory and streams it into a `.dat` blob.
+     * Resolves a picked URI (from SAF OpenMultipleDocuments, Android 13+ Photo Picker, or MediaStore)
+     * into its canonical MediaStore URI and/or physical filesystem path so source deletion succeeds.
      */
+    private fun resolveDeletableHandle(
+        context: Context,
+        uri: Uri,
+        displayName: String,
+        mimeType: String,
+        size: Long
+    ): DeletableSourceHandle {
+        val resolver = context.contentResolver
+        var mediaStoreUri: Uri? = null
+        var filePath: String? = null
+
+        try {
+            val uriStr = uri.toString()
+            val authority = uri.authority ?: ""
+
+            // 1. Check if it's an ExternalStorage Document URI (e.g. primary:DCIM/Camera/IMG.jpg)
+            if (authority == "com.android.externalstorage.documents" && DocumentsContract.isDocumentUri(context, uri)) {
+                val docId = DocumentsContract.getDocumentId(uri)
+                val parts = docId.split(":")
+                if (parts.size >= 2 && parts[0].equals("primary", ignoreCase = true)) {
+                    filePath = "${Environment.getExternalStorageDirectory().absolutePath}/${parts[1]}"
+                }
+            }
+
+            // 2. Check if it's a MediaProvider Document URI (e.g. image:100000123, video:100000123, document:100000123)
+            if (authority == "com.android.providers.media.documents" && DocumentsContract.isDocumentUri(context, uri)) {
+                val docId = DocumentsContract.getDocumentId(uri)
+                val parts = docId.split(":")
+                val numericId = parts.lastOrNull()?.toLongOrNull()
+                if (numericId != null) {
+                    mediaStoreUri = when (parts.firstOrNull()?.lowercase()) {
+                        "image" -> ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, numericId)
+                        "video" -> ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, numericId)
+                        "audio" -> ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, numericId)
+                        else -> ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), numericId)
+                    }
+                }
+            }
+
+            // 3. Check if it's an Android 13+ Photo Picker URI (e.g. content://media/picker/.../media/100000123)
+            if (mediaStoreUri == null && (uriStr.contains("/picker/") || authority.contains("photopicker") || authority == "media")) {
+                val lastSegment = uri.lastPathSegment
+                val numericId = lastSegment?.substringAfterLast(':')?.toLongOrNull()
+                if (numericId != null) {
+                    mediaStoreUri = when {
+                        mimeType.startsWith("image/") -> ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, numericId)
+                        mimeType.startsWith("video/") -> ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, numericId)
+                        mimeType.startsWith("audio/") -> ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, numericId)
+                        else -> ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), numericId)
+                    }
+                }
+            }
+
+            // 4. If still no MediaStore URI, query MediaStore by DISPLAY_NAME (and size) to locate the canonical item
+            if (mediaStoreUri == null && displayName.isNotBlank()) {
+                val collection = when {
+                    mimeType.startsWith("image/") -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                    mimeType.startsWith("video/") -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                    else -> MediaStore.Files.getContentUri("external")
+                }
+                val projection = arrayOf(
+                    MediaStore.MediaColumns._ID,
+                    MediaStore.MediaColumns.DATA
+                )
+                val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ?"
+                val selectionArgs = arrayOf(displayName)
+                resolver.query(collection, projection, selection, selectionArgs, "${MediaStore.MediaColumns.DATE_ADDED} DESC")?.use { c ->
+                    if (c.moveToFirst()) {
+                        val idIdx = c.getColumnIndex(MediaStore.MediaColumns._ID)
+                        val dataIdx = c.getColumnIndex(MediaStore.MediaColumns.DATA)
+                        if (idIdx >= 0) {
+                            val id = c.getLong(idIdx)
+                            mediaStoreUri = ContentUris.withAppendedId(collection, id)
+                        }
+                        if (filePath == null && dataIdx >= 0 && !c.isNull(dataIdx)) {
+                            filePath = c.getString(dataIdx)
+                        }
+                    }
+                }
+            }
+
+            // 5. Query _DATA path from mediaStoreUri or original uri if available
+            val targetForDataQuery = mediaStoreUri ?: uri
+            if (filePath == null) {
+                resolver.query(targetForDataQuery, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        val idx = c.getColumnIndex(MediaStore.MediaColumns.DATA)
+                        if (idx >= 0 && !c.isNull(idx)) {
+                            filePath = c.getString(idx)
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        return DeletableSourceHandle(
+            originalUri = uri,
+            displayName = displayName,
+            mimeType = mimeType,
+            size = size,
+            resolvedMediaStoreUri = mediaStoreUri,
+            resolvedFilePath = filePath
+        )
+    }
+
+    /**
+     * Executes deletion of original source files after the user confirms the deletion dialog.
+     * - Tries direct SAF `DocumentsContract.deleteDocument`, direct `ContentResolver.delete`, and POSIX `File.delete()`.
+     * - For any media items protected by Android 11+ (API 30+) Scoped Storage that require OS user consent,
+     *   creates a batch `MediaStore.createDeleteRequest(resolver, mediaUris).intentSender` so the Activity
+     *   can immediately complete the deletion.
+     */
+    suspend fun executeConfirmedOriginalDeletion(
+        context: Context,
+        handles: List<DeletableSourceHandle>
+    ): SourceDeletionOutcome = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        var deletedCount = 0
+        val mediaUrisRequiringSystemRequest = mutableListOf<Uri>()
+
+        for (handle in handles) {
+            var deleted = false
+
+            // Strategy 1: SAF DocumentsContract.deleteDocument
+            if (!deleted && DocumentsContract.isDocumentUri(context, handle.originalUri)) {
+                deleted = try {
+                    DocumentsContract.deleteDocument(resolver, handle.originalUri)
+                } catch (_: Exception) {
+                    false
+                }
+            }
+
+            // Strategy 2: ContentResolver.delete on originalUri
+            if (!deleted) {
+                deleted = try {
+                    resolver.delete(handle.originalUri, null, null) > 0
+                } catch (_: Exception) {
+                    false
+                }
+            }
+
+            // Strategy 3: ContentResolver.delete on resolved canonical MediaStore URI
+            if (!deleted && handle.resolvedMediaStoreUri != null) {
+                deleted = try {
+                    resolver.delete(handle.resolvedMediaStoreUri, null, null) > 0
+                } catch (_: Exception) {
+                    false
+                }
+            }
+
+            // Strategy 4: Direct POSIX file deletion if path is writable
+            if (!deleted && !handle.resolvedFilePath.isNullOrBlank()) {
+                val f = File(handle.resolvedFilePath)
+                if (f.exists() && f.delete()) {
+                    deleted = true
+                    MediaScannerConnection.scanFile(context, arrayOf(f.absolutePath), null, null)
+                }
+            }
+
+            if (deleted) {
+                deletedCount++
+                handle.resolvedFilePath?.let { path ->
+                    MediaScannerConnection.scanFile(context, arrayOf(path), null, null)
+                }
+            } else {
+                // Collect canonical MediaStore URI for Android 11+ MediaStore.createDeleteRequest
+                val candidateMediaUri = handle.resolvedMediaStoreUri
+                    ?: if (handle.originalUri.authority == "media") handle.originalUri else null
+                if (candidateMediaUri != null) {
+                    mediaUrisRequiringSystemRequest.add(candidateMediaUri)
+                }
+            }
+        }
+
+        var systemDeleteIntentSender: IntentSender? = null
+        if (mediaUrisRequiringSystemRequest.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val pendingIntent: PendingIntent = MediaStore.createDeleteRequest(
+                    resolver,
+                    mediaUrisRequiringSystemRequest.distinct()
+                )
+                systemDeleteIntentSender = pendingIntent.intentSender
+            } catch (_: Exception) {
+            }
+        }
+
+        SourceDeletionOutcome(
+            deletedImmediatelyCount = deletedCount,
+            pendingSystemDeleteIntentSender = systemDeleteIntentSender,
+            remainingHandlesCount = mediaUrisRequiringSystemRequest.size
+        )
+    }
+
     suspend fun createEncryptedNoteInVault(
         context: Context,
         folderId: Long?,
@@ -468,10 +639,6 @@ object VaultStorageManager {
         }
     }
 
-    /**
-     * Decrypts and restores a vault file back to system public Downloads directory
-     * (or to a user-chosen SAF OutputStream).
-     */
     suspend fun exportEncryptedFileToPublicDownloads(
         context: Context,
         fileEntity: VaultFileEntity
@@ -504,11 +671,10 @@ object VaultStorageManager {
                     contentValues.clear()
                     contentValues.put(MediaStore.Downloads.IS_PENDING, 0)
                     resolver.update(itemUri, contentValues, null, null)
-                    return@withContext Result.success("/sdcard/Download/XomeRestored/${fileEntity.originalName}")
+                    return@withContext Result.success("Download/XomeRestored/${fileEntity.originalName}")
                 }
             }
 
-            // Fallback to app external Downloads directory
             val fallbackDir = File(
                 context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
                 "XomeRestored"
@@ -525,10 +691,6 @@ object VaultStorageManager {
         }
     }
 
-    /**
-     * Permanently shreds an encrypted `.dat` blob (overwrites with random bytes before unlinking)
-     * and deletes its metadata record from SQLCipher.
-     */
     suspend fun shredVaultFile(context: Context, fileEntity: VaultFileEntity) =
         withContext(Dispatchers.IO) {
             val session = VaultSessionManager.activeSession.value ?: return@withContext
@@ -536,7 +698,6 @@ object VaultStorageManager {
             val blobFile = File(tree.blobsDir, fileEntity.blobFilename)
             if (blobFile.exists()) {
                 try {
-                    // Overwrite header + first 4KB with CSPRNG noise before deleting
                     val shredLen = blobFile.length().coerceAtMost(4096L).toInt()
                     if (shredLen > 0) {
                         val noise = VaultCryptoEngine.randomBytes(shredLen)
@@ -553,10 +714,6 @@ object VaultStorageManager {
             session.database.vaultDao().deleteFileById(fileEntity.id)
         }
 
-    /**
-     * Exports the entire `.sys_vault_data` physical directory (`spaces/<id>.header`, `db/<id>.db`, `blobs/<id>.dat`)
-     * into a portable self-healing archive stream so the user can restore across devices or OS resets.
-     */
     suspend fun exportVaultSelfHealingBundle(
         context: Context,
         outputStream: OutputStream
@@ -579,10 +736,6 @@ object VaultStorageManager {
         entriesWritten
     }
 
-    /**
-     * Imports a `.sys_vault_data` self-healing archive stream (`spaces/<id>.header`, `db/<id>.db`, `blobs/<id>.dat`),
-     * enabling instant password-based recovery of all spaces and directory trees.
-     */
     suspend fun importVaultSelfHealingBundle(
         context: Context,
         inputStream: InputStream
@@ -627,7 +780,6 @@ object VaultStorageManager {
         isDecoy: Boolean
     ) {
         try {
-            // 1. Encrypt high-res cryptographic architecture illustration into a real .dat blob
             val bannerBitmap = BitmapFactory.decodeResource(
                 context.resources,
                 R.drawable.img_vault_banner_1794279611736
@@ -655,11 +807,10 @@ object VaultStorageManager {
                     VaultCryptoEngine.encryptStreamToBlobFile(masterKey, bais, blobFile)
                 }
 
-                // Seed at root AND inside photos folder so user immediately sees an image on unlock
                 dao.insertFile(
                     VaultFileEntity(
                         folderId = null,
-                        originalName = if (isDecoy) "Architecture_Wallpaper_HD.jpg" else "Xome_Envelope_Topology_4K.jpg",
+                        originalName = if (isDecoy) "Wallpaper_Cover.jpg" else "Vault_Architecture.jpg",
                         mimeType = "image/jpeg",
                         originalSize = fullImageBytes.size.toLong(),
                         blobFilename = blobName,
@@ -669,7 +820,6 @@ object VaultStorageManager {
                     )
                 )
 
-                // Also seed second image inside Confidential Visuals folder
                 val calcBitmap = BitmapFactory.decodeResource(
                     context.resources,
                     R.drawable.img_launcher_calc_1794279609341
@@ -697,7 +847,7 @@ object VaultStorageManager {
                     dao.insertFile(
                         VaultFileEntity(
                             folderId = photosFolderId,
-                            originalName = "Industrial_Disguise_Schematic.jpg",
+                            originalName = "Design_Preview.jpg",
                             mimeType = "image/jpeg",
                             originalSize = calcBytes.size.toLong(),
                             blobFilename = blobName2,
@@ -709,19 +859,15 @@ object VaultStorageManager {
                 }
             }
 
-            // 2. Seed an encrypted specification document (.md) into a 64KB chunked .dat blob
             val specContent = """
-                # XOME CRYPTOGRAPHIC AUDIT MANIFEST
-                - Space Identifier: `$spaceId`
-                - Space Mode: `${if (isDecoy) "DECOY / PLAUSIBLE DENIABILITY" else "PRIMARY SOVEREIGN VAULT"}`
-                - Envelope Header: `spaces/$spaceId.header` (128 Bytes, Magic `CLCVLT01`)
-                - KDF Specification: `Argon2id (RFC 9106), t=3, p=4`
-                - File Cipher: `AES-256-GCM 64KB Streaming Chunks (Magic VBLK, 76B Header)`
-                - Metadata Storage: `SQLCipher Encrypted Room DB (db/$spaceId.db)`
+                # 空间安全说明 ($spaceId)
+                - 空间标识: `$spaceId`
+                - 头文件: `spaces/$spaceId.header` (128 Bytes)
+                - 密钥派生: `Argon2id (t=3, p=4)`
+                - 文件加密: `AES-256-GCM (64KB 分块流式加密)`
+                - 数据库: `SQLCipher (db/$spaceId.db)`
                 
-                ## Zero-Disk Decryption Guarantee
-                All media and documents inside this space are decrypted on-the-fly in RAM via `RandomAccessDecryptedStream` using O(1) chunk seeking (`offset / 65536`).
-                Pressing Home, switching apps, or locking the screen immediately invokes `Arrays.fill(masterKey, 0)` and closes the database.
+                所有图片与文档均通过内存流 `RandomAccessDecryptedStream` 实时解密渲染，不在磁盘产生任何临时明文文件。
             """.trimIndent()
             val specBytes = specContent.toByteArray(Charsets.UTF_8)
             val specBlobName = "${UUID.randomUUID().toString().replace("-", "")}.dat"
@@ -732,7 +878,7 @@ object VaultStorageManager {
             dao.insertFile(
                 VaultFileEntity(
                     folderId = null,
-                    originalName = "Cryptographic_Manifest_${spaceId.uppercase()}.md",
+                    originalName = "README_${spaceId.uppercase()}.md",
                     mimeType = "text/markdown",
                     originalSize = specBytes.size.toLong(),
                     blobFilename = specBlobName,
@@ -744,7 +890,7 @@ object VaultStorageManager {
             dao.insertFile(
                 VaultFileEntity(
                     folderId = docsFolderId,
-                    originalName = "Zero_Knowledge_Protocol_Notes.md",
+                    originalName = "Security_Notes.md",
                     mimeType = "text/markdown",
                     originalSize = specBytes.size.toLong(),
                     blobFilename = specBlobName,
@@ -764,7 +910,7 @@ object VaultStorageManager {
     )
 
     private fun queryUriMetadata(resolver: ContentResolver, uri: Uri): UriMeta {
-        var name = "vault_item_${System.currentTimeMillis()}"
+        var name = "file_${System.currentTimeMillis()}"
         var size = 0L
         try {
             resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
@@ -857,28 +1003,6 @@ object VaultStorageManager {
             }
         } catch (_: Exception) {
             null
-        }
-    }
-
-    private fun tryDeleteOriginalUri(context: Context, uri: Uri): Boolean {
-        val resolver = context.contentResolver
-        return try {
-            val docDeleted = if (DocumentsContract.isDocumentUri(context, uri)) {
-                DocumentsContract.deleteDocument(resolver, uri)
-            } else {
-                false
-            }
-            val contentDeleted = if (!docDeleted) {
-                resolver.delete(uri, null, null) > 0
-            } else {
-                true
-            }
-            if (contentDeleted) {
-                MediaScannerConnection.scanFile(context, arrayOf(uri.path ?: ""), null, null)
-            }
-            contentDeleted
-        } catch (_: Exception) {
-            false
         }
     }
 }

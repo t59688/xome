@@ -1,6 +1,7 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.IntentSender
 import android.net.Uri
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
@@ -14,6 +15,7 @@ import com.example.data.VaultFileEntity
 import com.example.data.VaultFolderEntity
 import com.example.data.VaultSpaceMetaEntity
 import com.example.storage.VaultStorageManager
+import com.example.ui.i18n.AppLanguage
 import java.io.File
 import java.util.Arrays
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +60,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private val appContext = application.applicationContext
+    private val uiPrefs = appContext.getSharedPreferences("xome_ui_prefs", android.content.Context.MODE_PRIVATE)
+
+    private val _appLanguage = MutableStateFlow(loadSavedLanguage())
+    val appLanguage: StateFlow<AppLanguage> = _appLanguage.asStateFlow()
 
     val isStreamingEmulator: Boolean = detectEmulatorEnvironment()
 
@@ -103,6 +109,18 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _importProgress = MutableStateFlow(ImportProgressState())
     val importProgress: StateFlow<ImportProgressState> = _importProgress.asStateFlow()
+
+    // Post-import confirmation state for deleting original files when in Move/Delete mode
+    private val _pendingDeleteConfirmation =
+        MutableStateFlow<List<VaultStorageManager.DeletableSourceHandle>>(emptyList())
+    val pendingDeleteConfirmation: StateFlow<List<VaultStorageManager.DeletableSourceHandle>> =
+        _pendingDeleteConfirmation.asStateFlow()
+
+    private val _pendingSystemDeleteIntent = MutableStateFlow<IntentSender?>(null)
+    val pendingSystemDeleteIntent: StateFlow<IntentSender?> =
+        _pendingSystemDeleteIntent.asStateFlow()
+
+    private var pendingSystemDeleteCount: Int = 0
 
     private val _statusBanner = MutableStateFlow<StatusBanner?>(null)
     val statusBanner: StateFlow<StatusBanner?> = _statusBanner.asStateFlow()
@@ -187,7 +205,6 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
     init {
-        // Perform all filesystem & root checks asynchronously on IO dispatcher
         viewModelScope.launch(Dispatchers.IO) {
             val report = RootSecurityDetector.inspectEnvironment()
             _environmentSecurityReport.value = report
@@ -196,7 +213,6 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
             _needsOnboarding.value = headers.isEmpty()
         }
 
-        // Observe lock events to reset internal navigation states immediately
         viewModelScope.launch {
             VaultSessionManager.activeSession.collect { session ->
                 if (session == null) {
@@ -206,6 +222,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     _activeImageViewerFileId.value = null
                     _activeDocumentViewerFile.value = null
                     _decryptedDocumentText.value = null
+                    _pendingDeleteConfirmation.value = emptyList()
                 } else {
                     withContext(Dispatchers.IO) {
                         _totalProvisionedSpaces.value =
@@ -216,20 +233,34 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun loadSavedLanguage(): AppLanguage {
+        val code = uiPrefs.getString("app_lang", AppLanguage.ZH.code)
+        return if (code == AppLanguage.EN.code) AppLanguage.EN else AppLanguage.ZH
+    }
+
+    fun setAppLanguage(language: AppLanguage) {
+        _appLanguage.value = language
+        uiPrefs.edit().putString("app_lang", language.code).apply()
+    }
+
+    fun toggleAppLanguage() {
+        setAppLanguage(_appLanguage.value.next())
+    }
+
+    private fun isZh(): Boolean = _appLanguage.value == AppLanguage.ZH
+
     fun setFlagSecureWindowEnabled(enabled: Boolean) {
         _flagSecureWindowEnabled.value = enabled
-        val msg = if (enabled) {
-            "Hardware FLAG_SECURE enabled (Note: Browser streaming emulators will show a black screen while active)."
+        val msg = if (isZh()) {
+            if (enabled) "已开启防截屏保护（云端模拟器下开启会显示黑屏）"
+            else "已关闭防截屏保护（适配云端模拟器预览）"
         } else {
-            "Stream-Compatible Mode active (UI visible in browser emulator)."
+            if (enabled) "Screenshot protection enabled"
+            else "Screenshot protection disabled for emulator preview"
         }
         showBanner(msg)
     }
 
-    /**
-     * Module 1 Self-Healing Check:
-     * Scans `/sdcard/Documents/.sys_vault_data/spaces/<hex>.header` on IO thread.
-     */
     fun refreshSelfHealingStatus() {
         viewModelScope.launch(Dispatchers.IO) {
             val headers = VaultStorageManager.listSpaceHeaderFiles(appContext)
@@ -247,25 +278,25 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         _showSetupDialog.value = true
     }
 
-    /**
-     * Completes first-launch setup by generating `.nomedia`, `spaces/<hex>.header`,
-     * and encrypted SQLCipher `db/<hex>.db`.
-     */
     fun provisionInitialPrimarySpace(
         rawSequence: String,
         confirmSequence: String,
-        spaceAlias: String = "Primary Sovereign Vault",
+        spaceAlias: String = "Main Space",
         enterCalculatorFirst: Boolean = false
     ) {
         val cleanSeq = rawSequence.trim()
         val cleanConfirm = confirmSequence.trim()
 
         if (cleanSeq.length !in 4..16) {
-            _onboardingError.value = "Unlock sequence must be 4 to 16 characters (e.g. 1314 or 9988+11)."
+            _onboardingError.value = if (isZh()) {
+                "解锁序列需为 4 至 16 位字符（如 1314 或 9988+11）"
+            } else {
+                "Sequence must be 4 to 16 characters (e.g. 1314 or 9988+11)."
+            }
             return
         }
         if (cleanSeq != cleanConfirm) {
-            _onboardingError.value = "Confirmation sequence does not match."
+            _onboardingError.value = if (isZh()) "两次输入的序列不一致" else "Confirmation sequence does not match."
             return
         }
 
@@ -275,10 +306,11 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val pinChars = cleanSeq.toCharArray()
             try {
+                val defaultAlias = if (isZh()) "主空间" else "Main Space"
                 VaultStorageManager.provisionNewSpace(
                     context = appContext,
                     pinChars = pinChars,
-                    spaceAlias = spaceAlias.ifBlank { "Primary Sovereign Vault" },
+                    spaceAlias = spaceAlias.ifBlank { defaultAlias },
                     isDecoy = false,
                     seedSampleFiles = true,
                     activateImmediately = !enterCalculatorFirst
@@ -287,12 +319,15 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 _needsOnboarding.value = false
                 _showSetupDialog.value = false
                 if (!enterCalculatorFirst) {
-                    showBanner("Primary Vault provisioned (Argon2id + 128B Envelope Header).")
+                    showBanner(if (isZh()) "私密空间已创建" else "Private space created")
                 } else {
-                    showBanner("Vault initialized! Type $cleanSeq and press = to unlock.")
+                    showBanner(
+                        if (isZh()) "设置完成，输入 $cleanSeq= 即可进入"
+                        else "Setup complete. Type $cleanSeq= to unlock."
+                    )
                 }
             } catch (e: Exception) {
-                _onboardingError.value = "Failed to initialize cryptographic space: ${e.message}"
+                _onboardingError.value = "Failed: ${e.message}"
             } finally {
                 Arrays.fill(pinChars, '\u0000')
                 _isProvisioningOnboarding.value = false
@@ -301,7 +336,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ------------------------------------------------------------------------
-    // Module 2: Disguised Scientific Calculator & Blind-Match Interceptor
+    // Disguised Scientific Calculator & Blind-Match Interceptor
     // ------------------------------------------------------------------------
 
     fun onCalculatorInput(token: String) {
@@ -376,16 +411,6 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         _calcState.value = _calcState.value.copy(history = emptyList())
     }
 
-    /**
-     * Triggered when user presses `=` on the disguised calculator:
-     * 1. Normalizes raw input sequence (e.g. `1314` or `9988+11`).
-     * 2. If no spaces exist yet and the user typed `1314`, auto-provisions the primary space with `1314`
-     *    and unlocks immediately!
-     * 3. If `.header` files exist and length is 4..16, runs Argon2id + AES-GCM tag check
-     *    across all `spaces/<hex>.header` in a background coroutine.
-     * 4. If all spaces fail verification: shows NO error message, immediately evaluates the
-     *    arithmetic expression and displays the normal math result!
-     */
     fun onCalculatorEqualsPressed() {
         val current = _calcState.value
         val rawExpr = current.expression.trim()
@@ -408,13 +433,12 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             if (!hasSpaces && normalizedCandidate == "1314") {
-                // Convenient first-time unlock if user directly types 1314= before opening setup dialog
                 val pinChars = "1314".toCharArray()
                 try {
                     VaultStorageManager.provisionNewSpace(
                         context = appContext,
                         pinChars = pinChars,
-                        spaceAlias = "Primary Sovereign Vault",
+                        spaceAlias = if (isZh()) "主空间" else "Main Space",
                         isDecoy = false,
                         seedSampleFiles = true,
                         activateImmediately = true
@@ -426,7 +450,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                         lastResult = "",
                         isVerifyingBlindSequence = false
                     )
-                    showBanner("Primary Vault initialized & unlocked with sequence 1314")
+                    showBanner(
+                        if (isZh()) "已通过默认密码 1314 创建并解锁空间"
+                        else "Unlocked space with default sequence 1314"
+                    )
                     return@launch
                 } finally {
                     Arrays.fill(pinChars, '\u0000')
@@ -500,7 +527,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ------------------------------------------------------------------------
-    // Module 3 & 4: Virtual File System, Multi-Space & Streaming File Import
+    // Virtual File System & File Import with Final Delete Confirmation
     // ------------------------------------------------------------------------
 
     fun navigateToFolder(folder: VaultFolderEntity?) {
@@ -546,7 +573,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     folderName = clean
                 )
             )
-            showBanner("Created encrypted folder \"$clean\"")
+            showBanner(if (isZh()) "已创建文件夹「$clean」" else "Created folder \"$clean\"")
         }
     }
 
@@ -559,7 +586,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 VaultStorageManager.shredVaultFile(appContext, file)
             }
             dao.deleteFolderById(folder.id)
-            showBanner("Deleted folder \"${folder.folderName}\" and shredded ${filesInside.size} blobs")
+            showBanner(
+                if (isZh()) "已删除文件夹「${folder.folderName}」"
+                else "Deleted folder \"${folder.folderName}\""
+            )
         }
     }
 
@@ -570,7 +600,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 isImporting = true,
                 currentIndex = 0,
                 totalCount = uris.size,
-                currentFileName = "Initializing 64KB AES-256-GCM pipeline...",
+                currentFileName = if (isZh()) "正在准备加密..." else "Preparing encryption...",
                 isMoveMode = moveAndWipeOriginal
             )
 
@@ -593,15 +623,88 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
             _importProgress.value = ImportProgressState(isImporting = false)
 
             if (result.errors.isNotEmpty() && result.importedCount == 0) {
-                showBanner("Import error: ${result.errors.first()}", isError = true)
+                showBanner(
+                    if (isZh()) "导入失败: ${result.errors.first()}"
+                    else "Import failed: ${result.errors.first()}",
+                    isError = true
+                )
+            } else if (moveAndWipeOriginal && result.pendingDeleteHandles.isNotEmpty()) {
+                // Show final confirmation dialog before deleting original files!
+                _pendingDeleteConfirmation.value = result.pendingDeleteHandles
             } else {
-                val modeDesc = if (moveAndWipeOriginal) {
-                    "Moved ${result.importedCount} files (${result.deletedOriginalsCount} originals wiped)"
-                } else {
-                    "Encrypted ${result.importedCount} files into 64KB .dat chunks"
-                }
-                showBanner(modeDesc)
+                showBanner(
+                    if (isZh()) "已加密导入 ${result.importedCount} 个文件"
+                    else "Encrypted and imported ${result.importedCount} file(s)"
+                )
             }
+        }
+    }
+
+    /**
+     * Invoked when the user confirms deleting the original files in the post-import dialog.
+     */
+    fun confirmDeleteOriginalFiles() {
+        val handles = _pendingDeleteConfirmation.value
+        _pendingDeleteConfirmation.value = emptyList()
+        if (handles.isEmpty()) return
+
+        viewModelScope.launch {
+            val outcome = VaultStorageManager.executeConfirmedOriginalDeletion(
+                context = appContext,
+                handles = handles
+            )
+            if (outcome.pendingSystemDeleteIntentSender != null) {
+                pendingSystemDeleteCount = handles.size - outcome.deletedImmediatelyCount
+                _pendingSystemDeleteIntent.value = outcome.pendingSystemDeleteIntentSender
+            } else {
+                val totalDeleted = outcome.deletedImmediatelyCount
+                if (totalDeleted > 0) {
+                    showBanner(
+                        if (isZh()) "已加密导入并删除 $totalDeleted 个原文件"
+                        else "Encrypted and deleted $totalDeleted original file(s)"
+                    )
+                } else {
+                    showBanner(
+                        if (isZh()) "原文件受系统权限保护，请通过文档选择器授权删除"
+                        else "Original file is read-only; select via Documents picker to allow deletion",
+                        isError = true
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Invoked when the user chooses to keep the original files in the post-import confirmation dialog.
+     */
+    fun cancelDeleteOriginalFiles() {
+        val count = _pendingDeleteConfirmation.value.size
+        _pendingDeleteConfirmation.value = emptyList()
+        if (count > 0) {
+            showBanner(
+                if (isZh()) "已加密导入 $count 个文件（已保留原文件）"
+                else "Imported $count file(s) (original files kept)"
+            )
+        }
+    }
+
+    /**
+     * Callback after Android's `MediaStore.createDeleteRequest` system sheet finishes.
+     */
+    fun onSystemDeleteIntentCompleted(approved: Boolean) {
+        _pendingSystemDeleteIntent.value = null
+        val count = pendingSystemDeleteCount.coerceAtLeast(1)
+        pendingSystemDeleteCount = 0
+        if (approved) {
+            showBanner(
+                if (isZh()) "已成功删除 $count 个系统原文件"
+                else "Deleted $count original file(s)"
+            )
+        } else {
+            showBanner(
+                if (isZh()) "已取消删除原文件，加密副本已安全保存"
+                else "Original file deletion cancelled; encrypted copy saved"
+            )
         }
     }
 
@@ -615,7 +718,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 content = content
             )
             if (created != null) {
-                showBanner("Encrypted note \"${created.originalName}\" into blobs/${created.blobFilename.take(10)}….dat")
+                showBanner(
+                    if (isZh()) "已保存笔记「${created.originalName}」"
+                    else "Saved note \"${created.originalName}\""
+                )
             }
         }
     }
@@ -630,7 +736,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 _activeDocumentViewerFile.value = null
                 _decryptedDocumentText.value = null
             }
-            showBanner("Shredded ${fileEntity.originalName} with CSPRNG overwrite")
+            showBanner(
+                if (isZh()) "已彻底删除「${fileEntity.originalName}」"
+                else "Deleted \"${fileEntity.originalName}\""
+            )
         }
     }
 
@@ -640,7 +749,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         val session = activeSession.value ?: return
         viewModelScope.launch {
             session.database.vaultDao().renameFile(fileEntity.id, clean)
-            showBanner("Renamed to \"$clean\" inside SQLCipher DB")
+            showBanner(if (isZh()) "已重命名为「$clean」" else "Renamed to \"$clean\"")
         }
     }
 
@@ -649,17 +758,24 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
             val res = VaultStorageManager.exportEncryptedFileToPublicDownloads(appContext, fileEntity)
             res.fold(
                 onSuccess = { path ->
-                    showBanner("Decrypted & restored to $path")
+                    showBanner(
+                        if (isZh()) "已导出至 $path"
+                        else "Exported to $path"
+                    )
                 },
                 onFailure = { err ->
-                    showBanner("Restore failed: ${err.message}", isError = true)
+                    showBanner(
+                        if (isZh()) "导出失败: ${err.message}"
+                        else "Export failed: ${err.message}",
+                        isError = true
+                    )
                 }
             )
         }
     }
 
     // ------------------------------------------------------------------------
-    // Module 5: In-Memory Streaming Image & Document Viewers
+    // In-Memory Streaming Image & Document Viewers
     // ------------------------------------------------------------------------
 
     fun openFileInMemoryViewer(fileEntity: VaultFileEntity) {
@@ -682,7 +798,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     private fun openDocumentInMemory(fileEntity: VaultFileEntity) {
         val session = activeSession.value ?: return
         _activeDocumentViewerFile.value = fileEntity
-        _decryptedDocumentText.value = "Decrypting 64KB AES-256-GCM chunks in RAM..."
+        _decryptedDocumentText.value = if (isZh()) "正在加载..." else "Loading..."
 
         viewModelScope.launch(Dispatchers.IO) {
             val masterKey = session.borrowMasterKeyCopy()
@@ -709,7 +825,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    _decryptedDocumentText.value = "Failed to stream-decrypt blob: ${e.message}"
+                    _decryptedDocumentText.value = "Error: ${e.message}"
                 }
             } finally {
                 Arrays.fill(masterKey, 0.toByte())
@@ -724,14 +840,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         plainSample: ByteArray
     ): String {
         val sb = StringBuilder()
-        sb.appendLine("=== IN-MEMORY STREAMING BINARY INSPECTOR ===")
-        sb.appendLine("Original Name : ${entity.originalName}")
-        sb.appendLine("MIME Type     : ${entity.mimeType}")
-        sb.appendLine("Plain Size    : ${entity.originalSize} Bytes")
-        sb.appendLine("Physical Blob : blobs/${entity.blobFilename} (${blobFile.length()} Bytes)")
-        sb.appendLine("Cipher Format : VBLK 80B Header + $totalChunks x 64KB AES-256-GCM Chunks")
+        sb.appendLine("File : ${entity.originalName}")
+        sb.appendLine("Type : ${entity.mimeType}")
+        sb.appendLine("Size : ${entity.originalSize} Bytes ($totalChunks chunks)")
         sb.appendLine("--------------------------------------------")
-        sb.appendLine("First ${minOf(plainSample.size, 512)} Decrypted Bytes (RAM Stream):")
         val limit = minOf(plainSample.size, 512)
         for (offset in 0 until limit step 16) {
             val lineEnd = minOf(offset + 16, limit)
@@ -746,7 +858,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ------------------------------------------------------------------------
-    // Module 4.4 & 3: Zero Re-encryption Password Change & Multi-Space Creation
+    // Zero Re-encryption Password Change & Multi-Space Creation
     // ------------------------------------------------------------------------
 
     fun changeCurrentSpaceSequence(
@@ -756,7 +868,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         onComplete: (Boolean, String) -> Unit
     ) {
         val session = activeSession.value ?: run {
-            onComplete(false, "No active vault session.")
+            onComplete(false, "No active session.")
             return
         }
         val cleanOld = oldSequence.trim()
@@ -764,11 +876,17 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         val cleanConfirm = confirmSequence.trim()
 
         if (cleanNew.length !in 4..16) {
-            onComplete(false, "New sequence must be 4 to 16 characters.")
+            onComplete(
+                false,
+                if (isZh()) "新序列需为 4 至 16 位字符" else "New sequence must be 4 to 16 characters."
+            )
             return
         }
         if (cleanNew != cleanConfirm) {
-            onComplete(false, "New sequence confirmation does not match.")
+            onComplete(
+                false,
+                if (isZh()) "两次输入的新序列不一致" else "Confirmation sequence does not match."
+            )
             return
         }
 
@@ -781,7 +899,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     VaultStorageManager.isSequenceAlreadyUsed(appContext, cleanNew)
                 }
                 if (usedElsewhere && cleanOld != cleanNew) {
-                    onComplete(false, "That sequence is already assigned to another space.")
+                    onComplete(
+                        false,
+                        if (isZh()) "该序列已被其他空间使用" else "That sequence is already used by another space."
+                    )
                     return@launch
                 }
 
@@ -794,11 +915,18 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val elapsed = System.currentTimeMillis() - startMs
                 if (ok) {
-                    val msg = "Key-Wrap Header re-sealed in ${elapsed}ms (Zero .db/.dat re-encryption!)"
+                    val msg = if (isZh()) {
+                        "解锁序列已更新 (${elapsed}ms)"
+                    } else {
+                        "Sequence updated (${elapsed}ms)"
+                    }
                     showBanner(msg)
                     onComplete(true, msg)
                 } else {
-                    onComplete(false, "Current sequence verification failed (AEADBadTagException).")
+                    onComplete(
+                        false,
+                        if (isZh()) "当前解锁序列不正确" else "Current sequence is incorrect."
+                    )
                 }
             } finally {
                 Arrays.fill(oldChars, '\u0000')
@@ -819,18 +947,27 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         val cleanConfirm = confirmSequence.trim()
 
         if (cleanSeq.length !in 4..16) {
-            onComplete(false, "Unlock sequence must be 4 to 16 characters.")
+            onComplete(
+                false,
+                if (isZh()) "解锁序列需为 4 至 16 位字符" else "Sequence must be 4 to 16 characters."
+            )
             return
         }
         if (cleanSeq != cleanConfirm) {
-            onComplete(false, "Sequence confirmation does not match.")
+            onComplete(
+                false,
+                if (isZh()) "两次输入的确认序列不一致" else "Sequence confirmation does not match."
+            )
             return
         }
 
         viewModelScope.launch {
             val alreadyUsed = VaultStorageManager.isSequenceAlreadyUsed(appContext, cleanSeq)
             if (alreadyUsed) {
-                onComplete(false, "This sequence already unlocks an existing space. Choose a distinct sequence.")
+                onComplete(
+                    false,
+                    if (isZh()) "该序列已被现有空间使用，请设置不同序列" else "This sequence is already used by another space."
+                )
                 return@launch
             }
 
@@ -839,17 +976,24 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 val created = VaultStorageManager.provisionNewSpace(
                     context = appContext,
                     pinChars = pinChars,
-                    spaceAlias = spaceAlias.ifBlank { if (isDecoy) "Decoy Space" else "Secondary Vault" },
+                    spaceAlias = spaceAlias.ifBlank {
+                        if (isZh()) (if (isDecoy) "访客空间" else "私密空间")
+                        else (if (isDecoy) "Guest Space" else "Private Space")
+                    },
                     isDecoy = isDecoy,
                     seedSampleFiles = true,
                     activateImmediately = switchToNewSpaceImmediately
                 )
                 refreshSelfHealingStatus()
-                val msg = "Created independent space ${created.spaceId}.header (128B) with isolated SQLCipher DB!"
+                val msg = if (isZh()) {
+                    "已创建新空间（计算器输入 $cleanSeq= 即可进入）"
+                } else {
+                    "Created new space (${created.spaceId})"
+                }
                 showBanner(msg)
                 onComplete(true, msg)
             } catch (e: Exception) {
-                onComplete(false, "Failed to provision space: ${e.message}")
+                onComplete(false, "Failed: ${e.message}")
             } finally {
                 Arrays.fill(pinChars, '\u0000')
             }
@@ -864,7 +1008,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                         VaultStorageManager.exportVaultSelfHealingBundle(appContext, out)
                     } ?: 0
                 }
-                showBanner("Exported $count encrypted vault files (.header, .db, .dat) for Self-Healing recovery.")
+                showBanner(
+                    if (isZh()) "已导出备份包（共 $count 项）"
+                    else "Exported backup archive ($count items)"
+                )
             } catch (e: Exception) {
                 showBanner("Export failed: ${e.message}", isError = true)
             }
@@ -880,9 +1027,12 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     } ?: 0
                 }
                 refreshSelfHealingStatus()
-                showBanner("Restored $count encrypted items into .sys_vault_data! Enter your sequence + = to unlock.")
+                showBanner(
+                    if (isZh()) "已恢复 $count 项加密数据，在计算器输入原密码并按 = 即可解锁"
+                    else "Restored $count items. Enter your sequence + = on calculator to unlock."
+                )
             } catch (e: Exception) {
-                showBanner("Self-healing import failed: ${e.message}", isError = true)
+                showBanner("Restore failed: ${e.message}", isError = true)
             }
         }
     }

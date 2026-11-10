@@ -10,6 +10,7 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -18,6 +19,8 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.crypto.VaultSessionManager
 import com.example.ui.calculator.DisguisedCalculatorScreen
+import com.example.ui.i18n.LocalAppStrings
+import com.example.ui.i18n.stringsForLanguage
 import com.example.ui.theme.CalcChassisBg
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.vault.VaultSpaceScreen
@@ -44,11 +47,6 @@ class MainActivity : ComponentActivity() {
             val activeSession by viewModel.activeSession.collectAsStateWithLifecycle()
             val flagSecureEnabled by viewModel.flagSecureWindowEnabled.collectAsStateWithLifecycle()
 
-            // Dynamically apply FLAG_SECURE only when inside an unlocked Private Space AND enabled.
-            // On the AI Studio Streaming Emulator (VirtualDisplay/WebRTC stream), setting FLAG_SECURE
-            // causes Android's SurfaceFlinger to mask the window with a solid black surface, so
-            // XomeViewModel automatically defaults flagSecureEnabled=false on streaming emulators
-            // while enabling it by default on physical devices.
             LaunchedEffect(activeSession, flagSecureEnabled) {
                 if (activeSession != null && flagSecureEnabled) {
                     window.setFlags(
@@ -74,6 +72,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun XomeRootHost(viewModel: XomeViewModel) {
+    val appLanguage by viewModel.appLanguage.collectAsStateWithLifecycle()
     val activeSession by viewModel.activeSession.collectAsStateWithLifecycle()
     val calcState by viewModel.calcState.collectAsStateWithLifecycle()
     val needsOnboarding by viewModel.needsOnboarding.collectAsStateWithLifecycle()
@@ -93,90 +92,102 @@ fun XomeRootHost(viewModel: XomeViewModel) {
     val totalFilesCount by viewModel.totalFileCount.collectAsStateWithLifecycle()
     val totalPlainBytes by viewModel.totalPlainBytes.collectAsStateWithLifecycle()
     val importProgress by viewModel.importProgress.collectAsStateWithLifecycle()
+    val pendingDeleteHandles by viewModel.pendingDeleteConfirmation.collectAsStateWithLifecycle()
+    val pendingSystemDeleteIntent by viewModel.pendingSystemDeleteIntent.collectAsStateWithLifecycle()
 
     val activeImageViewerFileId by viewModel.activeImageViewerFileId.collectAsStateWithLifecycle()
     val activeDocViewerFile by viewModel.activeDocumentViewerFile.collectAsStateWithLifecycle()
     val decryptedDocText by viewModel.decryptedDocumentText.collectAsStateWithLifecycle()
 
-    Crossfade(targetState = activeSession, label = "root_vault_switch") { session ->
-        if (session == null) {
-            DisguisedCalculatorScreen(
-                calcState = calcState,
-                needsOnboarding = needsOnboarding,
-                showSetupDialog = showSetupDialog,
-                isProvisioningOnboarding = isProvisioningOnboarding,
-                onboardingError = onboardingError,
-                totalProvisionedSpaces = totalSpaces,
-                statusBanner = statusBanner,
-                onInputToken = viewModel::onCalculatorInput,
-                onClear = viewModel::onCalculatorClear,
-                onBackspace = viewModel::onCalculatorBackspace,
-                onEquals = viewModel::onCalculatorEqualsPressed,
-                onToggleDegRad = viewModel::toggleDegreeRadianMode,
-                onToggleSciPad = viewModel::toggleScientificPad,
-                onToggleHistory = viewModel::toggleCalculatorHistory,
-                onClearHistory = viewModel::clearCalculatorHistory,
-                onProvisionPrimarySpace = viewModel::provisionInitialPrimarySpace,
-                onDismissOnboarding = viewModel::dismissOnboardingToCalculator,
-                onOpenOnboarding = viewModel::openOnboardingSetup,
-                onImportSelfHealingArchive = viewModel::importSelfHealingBundleFromUri
-            )
-        } else {
-            val imageFilesInFolder = files.filter { it.mimeType.startsWith("image/") }
-            when {
-                activeImageViewerFileId != null -> {
-                    InMemoryImageViewerOverlay(
-                        imageFiles = imageFilesInFolder,
-                        initialFileId = activeImageViewerFileId!!,
-                        onClose = viewModel::closeImageViewer,
-                        onExportFile = viewModel::exportFileToPublicStorage,
-                        onShredFile = viewModel::shredVaultFile
-                    )
-                }
-                activeDocViewerFile != null -> {
-                    InMemoryDocumentViewerDialog(
-                        fileEntity = activeDocViewerFile!!,
-                        decryptedContent = decryptedDocText ?: "",
-                        onClose = viewModel::closeDocumentViewer,
-                        onExportFile = viewModel::exportFileToPublicStorage,
-                        onShredFile = viewModel::shredVaultFile
-                    )
-                }
-                else -> {
-                    VaultSpaceScreen(
-                        session = session,
-                        spaceMeta = spaceMeta,
-                        folders = folders,
-                        files = files,
-                        breadcrumbs = breadcrumbs,
-                        searchQuery = searchQuery,
-                        totalSpacesCount = totalSpaces,
-                        totalFilesCount = totalFilesCount,
-                        totalPlainBytes = totalPlainBytes,
-                        importProgress = importProgress,
-                        statusBanner = statusBanner,
-                        securityReport = securityReport,
-                        flagSecureEnabled = flagSecureEnabled,
-                        isStreamingEmulator = viewModel.isStreamingEmulator,
-                        onToggleFlagSecure = viewModel::setFlagSecureWindowEnabled,
-                        onNavigateToFolder = viewModel::navigateToFolder,
-                        onNavigateUp = viewModel::navigateUpFolder,
-                        onSearchQueryChange = viewModel::updateSearchQuery,
-                        onCreateFolder = viewModel::createNewFolder,
-                        onDeleteFolder = viewModel::deleteFolder,
-                        onImportUris = viewModel::importSelectedUris,
-                        onCreateEncryptedNote = viewModel::createNewEncryptedNote,
-                        onOpenFileViewer = viewModel::openFileInMemoryViewer,
-                        onExportFileToPublic = viewModel::exportFileToPublicStorage,
-                        onShredFile = viewModel::shredVaultFile,
-                        onRenameFile = viewModel::renameVaultFile,
-                        onChangeSequence = viewModel::changeCurrentSpaceSequence,
-                        onCreateDecoySpace = viewModel::createIndependentDecoySpace,
-                        onExportSelfHealingArchive = viewModel::exportSelfHealingBundleToUri,
-                        onImportSelfHealingArchive = viewModel::importSelfHealingBundleFromUri,
-                        onLockVault = viewModel::lockVaultImmediately,
-                        onDismissBanner = viewModel::dismissBanner
-                    )
+    CompositionLocalProvider(LocalAppStrings provides stringsForLanguage(appLanguage)) {
+        Crossfade(targetState = activeSession, label = "root_vault_switch") { session ->
+            if (session == null) {
+                DisguisedCalculatorScreen(
+                    calcState = calcState,
+                    needsOnboarding = needsOnboarding,
+                    showSetupDialog = showSetupDialog,
+                    isProvisioningOnboarding = isProvisioningOnboarding,
+                    onboardingError = onboardingError,
+                    totalProvisionedSpaces = totalSpaces,
+                    statusBanner = statusBanner,
+                    onInputToken = viewModel::onCalculatorInput,
+                    onClear = viewModel::onCalculatorClear,
+                    onBackspace = viewModel::onCalculatorBackspace,
+                    onEquals = viewModel::onCalculatorEqualsPressed,
+                    onToggleDegRad = viewModel::toggleDegreeRadianMode,
+                    onToggleSciPad = viewModel::toggleScientificPad,
+                    onToggleHistory = viewModel::toggleCalculatorHistory,
+                    onClearHistory = viewModel::clearCalculatorHistory,
+                    onToggleLanguage = viewModel::toggleAppLanguage,
+                    onProvisionPrimarySpace = viewModel::provisionInitialPrimarySpace,
+                    onDismissOnboarding = viewModel::dismissOnboardingToCalculator,
+                    onOpenOnboarding = viewModel::openOnboardingSetup,
+                    onImportSelfHealingArchive = viewModel::importSelfHealingBundleFromUri
+                )
+            } else {
+                val imageFilesInFolder = files.filter { it.mimeType.startsWith("image/") }
+                when {
+                    activeImageViewerFileId != null -> {
+                        InMemoryImageViewerOverlay(
+                            imageFiles = imageFilesInFolder,
+                            initialFileId = activeImageViewerFileId!!,
+                            onClose = viewModel::closeImageViewer,
+                            onExportFile = viewModel::exportFileToPublicStorage,
+                            onShredFile = viewModel::shredVaultFile
+                        )
+                    }
+                    activeDocViewerFile != null -> {
+                        InMemoryDocumentViewerDialog(
+                            fileEntity = activeDocViewerFile!!,
+                            decryptedContent = decryptedDocText ?: "",
+                            onClose = viewModel::closeDocumentViewer,
+                            onExportFile = viewModel::exportFileToPublicStorage,
+                            onShredFile = viewModel::shredVaultFile
+                        )
+                    }
+                    else -> {
+                        VaultSpaceScreen(
+                            session = session,
+                            spaceMeta = spaceMeta,
+                            folders = folders,
+                            files = files,
+                            breadcrumbs = breadcrumbs,
+                            searchQuery = searchQuery,
+                            totalSpacesCount = totalSpaces,
+                            totalFilesCount = totalFilesCount,
+                            totalPlainBytes = totalPlainBytes,
+                            importProgress = importProgress,
+                            pendingDeleteHandles = pendingDeleteHandles,
+                            pendingSystemDeleteIntent = pendingSystemDeleteIntent,
+                            statusBanner = statusBanner,
+                            securityReport = securityReport,
+                            flagSecureEnabled = flagSecureEnabled,
+                            isStreamingEmulator = viewModel.isStreamingEmulator,
+                            onToggleFlagSecure = viewModel::setFlagSecureWindowEnabled,
+                            onToggleLanguage = viewModel::toggleAppLanguage,
+                            onSelectLanguage = viewModel::setAppLanguage,
+                            onNavigateToFolder = viewModel::navigateToFolder,
+                            onNavigateUp = viewModel::navigateUpFolder,
+                            onSearchQueryChange = viewModel::updateSearchQuery,
+                            onCreateFolder = viewModel::createNewFolder,
+                            onDeleteFolder = viewModel::deleteFolder,
+                            onImportUris = viewModel::importSelectedUris,
+                            onConfirmDeleteOriginals = viewModel::confirmDeleteOriginalFiles,
+                            onCancelDeleteOriginals = viewModel::cancelDeleteOriginalFiles,
+                            onSystemDeleteIntentCompleted = viewModel::onSystemDeleteIntentCompleted,
+                            onCreateEncryptedNote = viewModel::createNewEncryptedNote,
+                            onOpenFileViewer = viewModel::openFileInMemoryViewer,
+                            onExportFileToPublic = viewModel::exportFileToPublicStorage,
+                            onShredFile = viewModel::shredVaultFile,
+                            onRenameFile = viewModel::renameVaultFile,
+                            onChangeSequence = viewModel::changeCurrentSpaceSequence,
+                            onCreateDecoySpace = viewModel::createIndependentDecoySpace,
+                            onExportSelfHealingArchive = viewModel::exportSelfHealingBundleToUri,
+                            onImportSelfHealingArchive = viewModel::importSelfHealingBundleFromUri,
+                            onLockVault = viewModel::lockVaultImmediately,
+                            onDismissBanner = viewModel::dismissBanner
+                        )
+                    }
                 }
             }
         }
