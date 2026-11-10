@@ -54,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -62,7 +63,7 @@ import com.example.crypto.VaultSessionManager
 import com.example.data.VaultSpaceMetaEntity
 import com.example.ui.i18n.AppLanguage
 import com.example.ui.i18n.LocalAppStrings
-import com.example.ui.theme.CalcAccentOrange
+import com.example.ui.theme.CalcAccentCopper
 import com.example.ui.theme.CalcClearKeyText
 import com.example.ui.theme.CalcTextMuted
 import com.example.ui.theme.CalcTextPrimary
@@ -70,11 +71,12 @@ import com.example.ui.theme.CalcTextSecondary
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.VaultAmberWarning
 import com.example.ui.theme.VaultBorderSubtle
-import com.example.ui.theme.VaultCyanPrimary
+import com.example.ui.theme.VaultAccentPrimary
 import com.example.ui.theme.VaultEmeraldSuccess
 import com.example.ui.theme.VaultPurpleDecoy
 import com.example.ui.theme.VaultSurface
 import com.example.ui.theme.VaultSurfaceElevated
+import com.example.update.UpdateRepository
 
 @Composable
 fun VaultSecuritySettingsTab(
@@ -86,6 +88,7 @@ fun VaultSecuritySettingsTab(
     securityReport: RootSecurityDetector.EnvironmentSecurityReport,
     flagSecureEnabled: Boolean,
     isStreamingEmulator: Boolean,
+    updateRepository: UpdateRepository,
     onToggleFlagSecure: (Boolean) -> Unit,
     onSelectLanguage: (AppLanguage) -> Unit,
     onChangeSequence: (oldSeq: String, newSeq: String, confirmSeq: String, cb: (Boolean, String) -> Unit) -> Unit,
@@ -96,14 +99,14 @@ fun VaultSecuritySettingsTab(
 ) {
     val strings = LocalAppStrings.current
 
-    var oldPin by rememberSaveable { mutableStateOf("") }
-    var newPin by rememberSaveable { mutableStateOf("") }
-    var confirmNewPin by rememberSaveable { mutableStateOf("") }
+    var oldPin by remember { mutableStateOf("") }
+    var newPin by remember { mutableStateOf("") }
+    var confirmNewPin by remember { mutableStateOf("") }
     var pinFeedback by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
 
     var decoyAlias by rememberSaveable { mutableStateOf(strings.defaultDecoySpaceAlias) }
-    var decoyPin by rememberSaveable { mutableStateOf("") }
-    var decoyConfirmPin by rememberSaveable { mutableStateOf("") }
+    var decoyPin by remember { mutableStateOf("") }
+    var decoyConfirmPin by remember { mutableStateOf("") }
     var isDecoyMode by rememberSaveable { mutableStateOf(true) }
     var switchImmediately by rememberSaveable { mutableStateOf(false) }
     var decoyFeedback by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
@@ -158,7 +161,7 @@ fun VaultSecuritySettingsTab(
                     Icon(
                         imageVector = Icons.Default.LockReset,
                         contentDescription = null,
-                        tint = VaultCyanPrimary,
+                        tint = VaultAccentPrimary,
                         modifier = Modifier.size(20.dp)
                     )
                     Column {
@@ -178,13 +181,14 @@ fun VaultSecuritySettingsTab(
                 OutlinedTextField(
                     value = oldPin,
                     onValueChange = { oldPin = it },
+                    visualTransformation = PasswordVisualTransformation(),
                     label = { Text(strings.currentTriggerSequenceLabel) },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("change_pin_old_input"),
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = VaultCyanPrimary,
+                        focusedBorderColor = VaultAccentPrimary,
                         unfocusedBorderColor = VaultBorderSubtle
                     )
                 )
@@ -196,26 +200,28 @@ fun VaultSecuritySettingsTab(
                     OutlinedTextField(
                         value = newPin,
                         onValueChange = { newPin = it },
+                        visualTransformation = PasswordVisualTransformation(),
                         label = { Text(strings.newSequenceLabel) },
                         singleLine = true,
                         modifier = Modifier
                             .weight(1f)
                             .testTag("change_pin_new_input"),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = CalcAccentOrange,
+                            focusedBorderColor = CalcAccentCopper,
                             unfocusedBorderColor = VaultBorderSubtle
                         )
                     )
                     OutlinedTextField(
                         value = confirmNewPin,
                         onValueChange = { confirmNewPin = it },
+                        visualTransformation = PasswordVisualTransformation(),
                         label = { Text(strings.confirmNewLabel) },
                         singleLine = true,
                         modifier = Modifier
                             .weight(1f)
                             .testTag("change_pin_confirm_input"),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = CalcAccentOrange,
+                            focusedBorderColor = CalcAccentCopper,
                             unfocusedBorderColor = VaultBorderSubtle
                         )
                     )
@@ -242,7 +248,7 @@ fun VaultSecuritySettingsTab(
                     },
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = VaultCyanPrimary,
+                        containerColor = VaultAccentPrimary,
                         contentColor = Color(0xFF06202B)
                     ),
                     modifier = Modifier
@@ -334,6 +340,7 @@ fun VaultSecuritySettingsTab(
                     OutlinedTextField(
                         value = decoyPin,
                         onValueChange = { decoyPin = it },
+                        visualTransformation = PasswordVisualTransformation(),
                         label = { Text(strings.newSpaceSequenceLabel) },
                         singleLine = true,
                         modifier = Modifier
@@ -347,6 +354,7 @@ fun VaultSecuritySettingsTab(
                     OutlinedTextField(
                         value = decoyConfirmPin,
                         onValueChange = { decoyConfirmPin = it },
+                        visualTransformation = PasswordVisualTransformation(),
                         label = { Text(strings.confirmSequenceLabel) },
                         singleLine = true,
                         modifier = Modifier
@@ -397,7 +405,7 @@ fun VaultSecuritySettingsTab(
                     Switch(
                         checked = switchImmediately,
                         onCheckedChange = { switchImmediately = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = VaultCyanPrimary)
+                        colors = SwitchDefaults.colors(checkedThumbColor = VaultAccentPrimary)
                     )
                 }
 
@@ -482,7 +490,7 @@ fun VaultSecuritySettingsTab(
                     OutlinedButton(
                         onClick = onExportSelfHealingArchive,
                         shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, VaultCyanPrimary.copy(alpha = 0.45f)),
+                        border = BorderStroke(1.dp, VaultAccentPrimary.copy(alpha = 0.45f)),
                         modifier = Modifier
                             .weight(1f)
                             .height(46.dp)
@@ -491,13 +499,13 @@ fun VaultSecuritySettingsTab(
                         Icon(
                             imageVector = Icons.Default.Archive,
                             contentDescription = null,
-                            tint = VaultCyanPrimary,
+                            tint = VaultAccentPrimary,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = strings.exportSysVaultDataBtn,
-                            color = VaultCyanPrimary,
+                            color = VaultAccentPrimary,
                             style = MaterialTheme.typography.labelLarge,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -531,6 +539,8 @@ fun VaultSecuritySettingsTab(
                 }
             }
         }
+
+        XomeUpdateSettings(updateRepository)
 
         Spacer(modifier = Modifier.height(28.dp))
     }
@@ -573,7 +583,7 @@ private fun LanguageAndPrivacyCard(
                     Icon(
                         imageVector = Icons.Default.Translate,
                         contentDescription = null,
-                        tint = VaultCyanPrimary,
+                        tint = VaultAccentPrimary,
                         modifier = Modifier.size(20.dp)
                     )
                     Column {
@@ -605,7 +615,7 @@ private fun LanguageAndPrivacyCard(
                                 )
                             },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = VaultCyanPrimary,
+                                selectedContainerColor = VaultAccentPrimary,
                                 selectedLabelColor = Color(0xFF06202B)
                             ),
                             modifier = Modifier.testTag("select_lang_${lang.code}")
@@ -698,7 +708,7 @@ private fun SpaceOverviewCard(
                     Icon(
                         imageVector = Icons.Default.Shield,
                         contentDescription = null,
-                        tint = VaultCyanPrimary,
+                        tint = VaultAccentPrimary,
                         modifier = Modifier.size(20.dp)
                     )
                     Column {
@@ -708,7 +718,11 @@ private fun SpaceOverviewCard(
                             color = CalcTextPrimary
                         )
                         Text(
-                            text = "$totalFilesCount files · ${formatByteSize(totalPlainBytes)} · $totalSpacesCount space(s)",
+                            text = if (strings.language == AppLanguage.ZH) {
+                                "$totalFilesCount 个文件 · ${formatByteSize(totalPlainBytes)} · $totalSpacesCount 个空间"
+                            } else {
+                                "$totalFilesCount files · ${formatByteSize(totalPlainBytes)} · $totalSpacesCount spaces"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = CalcTextSecondary
                         )

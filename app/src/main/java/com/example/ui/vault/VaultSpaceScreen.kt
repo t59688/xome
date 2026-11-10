@@ -5,6 +5,7 @@ import android.content.IntentSender
 import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -112,19 +114,20 @@ import com.example.data.VaultSpaceMetaEntity
 import com.example.storage.VaultStorageManager
 import com.example.ui.i18n.AppLanguage
 import com.example.ui.i18n.LocalAppStrings
-import com.example.ui.theme.CalcAccentOrange
+import com.example.ui.theme.CalcAccentCopper
 import com.example.ui.theme.CalcClearKeyText
 import com.example.ui.theme.CalcTextMuted
 import com.example.ui.theme.CalcTextPrimary
 import com.example.ui.theme.CalcTextSecondary
 import com.example.ui.theme.VaultBorderSubtle
-import com.example.ui.theme.VaultCyanPrimary
+import com.example.ui.theme.VaultAccentPrimary
 import com.example.ui.theme.VaultEmeraldSuccess
 import com.example.ui.theme.VaultPurpleDecoy
 import com.example.ui.theme.VaultSurface
 import com.example.ui.theme.VaultSurfaceElevated
 import com.example.ui.theme.VaultVoidBg
 import com.example.viewmodel.XomeViewModel
+import com.example.update.UpdateRepository
 import java.text.SimpleDateFormat
 import java.util.Arrays
 import java.util.Date
@@ -151,6 +154,7 @@ fun VaultSpaceScreen(
     securityReport: RootSecurityDetector.EnvironmentSecurityReport,
     flagSecureEnabled: Boolean,
     isStreamingEmulator: Boolean,
+    updateRepository: UpdateRepository,
     onToggleFlagSecure: (Boolean) -> Unit,
     onToggleLanguage: () -> Unit,
     onSelectLanguage: (AppLanguage) -> Unit,
@@ -173,7 +177,9 @@ fun VaultSpaceScreen(
     onExportSelfHealingArchive: (android.net.Uri) -> Unit,
     onImportSelfHealingArchive: (android.net.Uri) -> Unit,
     onLockVault: () -> Unit,
-    onDismissBanner: () -> Unit
+    onDismissBanner: () -> Unit,
+    onExternalActivityStarted: () -> Unit,
+    onExternalActivityFinished: () -> Unit
 ) {
     val strings = LocalAppStrings.current
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
@@ -194,6 +200,7 @@ fun VaultSpaceScreen(
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 25)
     ) { uris ->
+        onExternalActivityFinished()
         if (uris.isNotEmpty()) {
             onImportUris(uris, isMoveAndWipeMode)
         }
@@ -202,6 +209,7 @@ fun VaultSpaceScreen(
     val safDocumentsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
+        onExternalActivityFinished()
         if (uris.isNotEmpty()) {
             onImportUris(uris, isMoveAndWipeMode)
         }
@@ -210,14 +218,17 @@ fun VaultSpaceScreen(
     val systemDeleteIntentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
+        onExternalActivityFinished()
         onSystemDeleteIntentCompleted(result.resultCode == Activity.RESULT_OK)
     }
 
     LaunchedEffect(pendingSystemDeleteIntent) {
         if (pendingSystemDeleteIntent != null) {
             try {
-                systemDeleteIntentLauncher.launch(
-                    IntentSenderRequest.Builder(pendingSystemDeleteIntent).build()
+                systemDeleteIntentLauncher.launchWithVaultGuard(
+                    IntentSenderRequest.Builder(pendingSystemDeleteIntent).build(),
+                    onExternalActivityStarted,
+                    onExternalActivityFinished
                 )
             } catch (_: Exception) {
                 onSystemDeleteIntentCompleted(false)
@@ -228,6 +239,7 @@ fun VaultSpaceScreen(
     val exportArchiveLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip")
     ) { uri ->
+        onExternalActivityFinished()
         if (uri != null) {
             onExportSelfHealingArchive(uri)
         }
@@ -236,6 +248,7 @@ fun VaultSpaceScreen(
     val importArchiveLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
+        onExternalActivityFinished()
         if (uri != null) {
             onImportSelfHealingArchive(uri)
         }
@@ -265,9 +278,9 @@ fun VaultSpaceScreen(
                     icon = { Icon(Icons.Default.Folder, contentDescription = strings.navEncryptedVfs) },
                     label = { Text(strings.navEncryptedVfs, maxLines = 1) },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = VaultCyanPrimary,
-                        selectedTextColor = VaultCyanPrimary,
-                        indicatorColor = VaultCyanPrimary.copy(alpha = 0.14f),
+                        selectedIconColor = VaultAccentPrimary,
+                        selectedTextColor = VaultAccentPrimary,
+                        indicatorColor = VaultAccentPrimary.copy(alpha = 0.14f),
                         unselectedIconColor = CalcTextSecondary,
                         unselectedTextColor = CalcTextSecondary
                     ),
@@ -279,9 +292,9 @@ fun VaultSpaceScreen(
                     icon = { Icon(Icons.Default.Settings, contentDescription = strings.navSpacesAndCrypto) },
                     label = { Text(strings.navSpacesAndCrypto, maxLines = 1) },
                     colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = VaultCyanPrimary,
-                        selectedTextColor = VaultCyanPrimary,
-                        indicatorColor = VaultCyanPrimary.copy(alpha = 0.14f),
+                        selectedIconColor = VaultAccentPrimary,
+                        selectedTextColor = VaultAccentPrimary,
+                        indicatorColor = VaultAccentPrimary.copy(alpha = 0.14f),
                         unselectedIconColor = CalcTextSecondary,
                         unselectedTextColor = CalcTextSecondary
                     ),
@@ -293,7 +306,7 @@ fun VaultSpaceScreen(
             if (selectedTab == 0) {
                 FloatingActionButton(
                     onClick = { showImportSheet = true },
-                    containerColor = VaultCyanPrimary,
+                    containerColor = VaultAccentPrimary,
                     contentColor = Color(0xFF06202B),
                     shape = RoundedCornerShape(18.dp),
                     modifier = Modifier
@@ -355,7 +368,7 @@ fun VaultSpaceScreen(
                 Surface(
                     color = VaultSurfaceElevated,
                     shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, VaultCyanPrimary.copy(alpha = 0.4f)),
+                    border = BorderStroke(1.dp, VaultAccentPrimary.copy(alpha = 0.4f)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -371,7 +384,7 @@ fun VaultSpaceScreen(
                                 strings.streamingProgressTitle(importProgress.currentIndex, importProgress.totalCount)
                             },
                             style = MaterialTheme.typography.labelSmall,
-                            color = VaultCyanPrimary,
+                            color = VaultAccentPrimary,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
@@ -383,7 +396,7 @@ fun VaultSpaceScreen(
                         )
                         LinearProgressIndicator(
                             modifier = Modifier.fillMaxWidth(),
-                            color = VaultCyanPrimary,
+                            color = VaultAccentPrimary,
                             trackColor = VaultBorderSubtle
                         )
                     }
@@ -402,7 +415,7 @@ fun VaultSpaceScreen(
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     if (folders.isNotEmpty()) {
                         item {
@@ -466,15 +479,24 @@ fun VaultSpaceScreen(
                     securityReport = securityReport,
                     flagSecureEnabled = flagSecureEnabled,
                     isStreamingEmulator = isStreamingEmulator,
+                    updateRepository = updateRepository,
                     onToggleFlagSecure = onToggleFlagSecure,
                     onSelectLanguage = onSelectLanguage,
                     onChangeSequence = onChangeSequence,
                     onCreateDecoySpace = onCreateDecoySpace,
                     onExportSelfHealingArchive = {
-                        exportArchiveLauncher.launch("xome_backup_${session.spaceId}.zip")
+                        exportArchiveLauncher.launchWithVaultGuard(
+                            "xome_backup_${session.spaceId}.zip",
+                            onExternalActivityStarted,
+                            onExternalActivityFinished
+                        )
                     },
                     onImportSelfHealingArchive = {
-                        importArchiveLauncher.launch(arrayOf("*/*"))
+                        importArchiveLauncher.launchWithVaultGuard(
+                            arrayOf("*/*"),
+                            onExternalActivityStarted,
+                            onExternalActivityFinished
+                        )
                     }
                 )
             }
@@ -495,16 +517,26 @@ fun VaultSpaceScreen(
                     if (isMoveAndWipeMode) {
                         // In Delete Original (Move) mode, use OpenMultipleDocuments for media so SAF grants
                         // write/delete flags directly on the document URI, backed by MediaStore fallback.
-                        safDocumentsLauncher.launch(arrayOf("image/*", "video/*"))
+                        safDocumentsLauncher.launchWithVaultGuard(
+                            arrayOf("image/*", "video/*"),
+                            onExternalActivityStarted,
+                            onExternalActivityFinished
+                        )
                     } else {
-                        photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                        photoPickerLauncher.launchWithVaultGuard(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
+                            onExternalActivityStarted,
+                            onExternalActivityFinished
                         )
                     }
                 },
                 onPickAnyFilesSaf = {
                     showImportSheet = false
-                    safDocumentsLauncher.launch(arrayOf("*/*"))
+                    safDocumentsLauncher.launchWithVaultGuard(
+                        arrayOf("*/*"),
+                        onExternalActivityStarted,
+                        onExternalActivityFinished
+                    )
                 },
                 onCreateNewFolder = {
                     showImportSheet = false
@@ -639,6 +671,7 @@ private fun VaultTopHeaderBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(VaultSurface)
+            .statusBarsPadding()
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -685,7 +718,7 @@ private fun VaultTopHeaderBar(
                         .clip(RoundedCornerShape(10.dp))
                         .background(
                             if (isSearchExpanded || searchQuery.isNotEmpty()) {
-                                VaultCyanPrimary.copy(alpha = 0.16f)
+                                VaultAccentPrimary.copy(alpha = 0.16f)
                             } else {
                                 VaultSurfaceElevated
                             }
@@ -694,7 +727,7 @@ private fun VaultTopHeaderBar(
                     Icon(
                         imageVector = Icons.Default.Search,
                         contentDescription = strings.searchPlaceholder,
-                        tint = if (isSearchExpanded || searchQuery.isNotEmpty()) VaultCyanPrimary else CalcTextSecondary,
+                        tint = if (isSearchExpanded || searchQuery.isNotEmpty()) VaultAccentPrimary else CalcTextSecondary,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -751,7 +784,7 @@ private fun VaultTopHeaderBar(
                 singleLine = true,
                 shape = RoundedCornerShape(12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = VaultCyanPrimary,
+                    focusedBorderColor = VaultAccentPrimary,
                     unfocusedBorderColor = VaultBorderSubtle,
                     focusedContainerColor = VaultVoidBg,
                     unfocusedContainerColor = VaultVoidBg
@@ -789,7 +822,7 @@ private fun FolderBreadcrumbBar(
         ) {
             Surface(
                 onClick = onNavigateToRoot,
-                color = if (breadcrumbs.isEmpty()) VaultCyanPrimary.copy(alpha = 0.14f) else VaultSurfaceElevated,
+                color = if (breadcrumbs.isEmpty()) VaultAccentPrimary.copy(alpha = 0.14f) else VaultSurfaceElevated,
                 shape = RoundedCornerShape(8.dp),
                 modifier = Modifier.testTag("breadcrumb_root")
             ) {
@@ -801,14 +834,14 @@ private fun FolderBreadcrumbBar(
                     Icon(
                         imageVector = Icons.Default.Home,
                         contentDescription = strings.rootBreadcrumb,
-                        tint = if (breadcrumbs.isEmpty()) VaultCyanPrimary else CalcTextSecondary,
+                        tint = if (breadcrumbs.isEmpty()) VaultAccentPrimary else CalcTextSecondary,
                         modifier = Modifier.size(15.dp)
                     )
                     if (breadcrumbs.isEmpty()) {
                         Text(
                             text = strings.rootBreadcrumb,
                             style = MaterialTheme.typography.labelLarge,
-                            color = VaultCyanPrimary
+                            color = VaultAccentPrimary
                         )
                     }
                 }
@@ -824,13 +857,13 @@ private fun FolderBreadcrumbBar(
                 val isLast = idx == breadcrumbs.lastIndex
                 Surface(
                     onClick = { onNavigateToCrumb(crumb) },
-                    color = if (isLast) VaultCyanPrimary.copy(alpha = 0.14f) else VaultSurfaceElevated,
+                    color = if (isLast) VaultAccentPrimary.copy(alpha = 0.14f) else VaultSurfaceElevated,
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Text(
                         text = crumb.folderName,
                         style = MaterialTheme.typography.labelLarge,
-                        color = if (isLast) VaultCyanPrimary else CalcTextSecondary,
+                        color = if (isLast) VaultAccentPrimary else CalcTextSecondary,
                         maxLines = 1,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                     )
@@ -878,8 +911,7 @@ private fun EncryptedFolderRow(
     Surface(
         onClick = onClick,
         color = VaultSurface,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, VaultBorderSubtle),
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("folder_item_${folder.folderName}")
@@ -900,13 +932,13 @@ private fun EncryptedFolderRow(
                     modifier = Modifier
                         .size(40.dp)
                         .clip(RoundedCornerShape(10.dp))
-                        .background(VaultCyanPrimary.copy(alpha = 0.12f)),
+                        .background(VaultAccentPrimary.copy(alpha = 0.12f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Folder,
                         contentDescription = null,
-                        tint = VaultCyanPrimary,
+                        tint = VaultAccentPrimary,
                         modifier = Modifier.size(20.dp)
                     )
                 }
@@ -983,8 +1015,7 @@ private fun EncryptedFileCard(
     Surface(
         onClick = onClick,
         color = VaultSurface,
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, VaultBorderSubtle),
+        shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("file_item_${fileEntity.id}")
@@ -992,7 +1023,7 @@ private fun EncryptedFileCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -1022,7 +1053,7 @@ private fun EncryptedFileCard(
                     Icon(
                         imageVector = icon,
                         contentDescription = null,
-                        tint = VaultCyanPrimary,
+                        tint = VaultAccentPrimary,
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -1090,13 +1121,13 @@ private fun EmptyVaultDirectoryCard(
                 modifier = Modifier
                     .size(52.dp)
                     .clip(CircleShape)
-                    .background(VaultCyanPrimary.copy(alpha = 0.12f)),
+                    .background(VaultAccentPrimary.copy(alpha = 0.12f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.Folder,
                     contentDescription = null,
-                    tint = VaultCyanPrimary,
+                    tint = VaultAccentPrimary,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -1116,7 +1147,7 @@ private fun EmptyVaultDirectoryCard(
                     onClick = onImportClick,
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = VaultCyanPrimary,
+                        containerColor = VaultAccentPrimary,
                         contentColor = Color(0xFF06202B)
                     )
                 ) {
@@ -1163,7 +1194,7 @@ private fun VaultImportBottomSheetContent(
             shape = RoundedCornerShape(14.dp),
             border = BorderStroke(
                 1.dp,
-                if (isMoveAndWipeMode) CalcAccentOrange.copy(alpha = 0.55f) else VaultBorderSubtle
+                if (isMoveAndWipeMode) CalcAccentCopper.copy(alpha = 0.55f) else VaultBorderSubtle
             ),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -1178,7 +1209,7 @@ private fun VaultImportBottomSheetContent(
                     Text(
                         text = if (isMoveAndWipeMode) strings.modeMoveTitle else strings.modeCopyTitle,
                         style = MaterialTheme.typography.titleMedium,
-                        color = if (isMoveAndWipeMode) CalcAccentOrange else CalcTextPrimary
+                        color = if (isMoveAndWipeMode) CalcAccentCopper else CalcTextPrimary
                     )
                     Text(
                         text = if (isMoveAndWipeMode) strings.modeMoveDesc else strings.modeCopyDesc,
@@ -1190,7 +1221,7 @@ private fun VaultImportBottomSheetContent(
                 Switch(
                     checked = isMoveAndWipeMode,
                     onCheckedChange = onToggleMoveMode,
-                    colors = SwitchDefaults.colors(checkedThumbColor = CalcAccentOrange),
+                    colors = SwitchDefaults.colors(checkedThumbColor = CalcAccentCopper),
                     modifier = Modifier.testTag("import_move_mode_switch")
                 )
             }
@@ -1200,7 +1231,7 @@ private fun VaultImportBottomSheetContent(
             onClick = onPickPhotosAndVideos,
             shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = VaultCyanPrimary,
+                containerColor = VaultAccentPrimary,
                 contentColor = Color(0xFF06202B)
             ),
             modifier = Modifier
@@ -1225,7 +1256,7 @@ private fun VaultImportBottomSheetContent(
                 .height(48.dp)
                 .testTag("import_saf_files_button")
         ) {
-            Icon(Icons.Default.UploadFile, contentDescription = null, tint = VaultCyanPrimary, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.UploadFile, contentDescription = null, tint = VaultAccentPrimary, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(8.dp))
             Text(strings.safDocumentPickerBtn, fontWeight = FontWeight.Medium, maxLines = 1)
         }
@@ -1242,7 +1273,7 @@ private fun VaultImportBottomSheetContent(
                     .weight(1f)
                     .height(46.dp)
             ) {
-                Icon(Icons.Default.CreateNewFolder, contentDescription = null, tint = VaultCyanPrimary, modifier = Modifier.size(17.dp))
+                Icon(Icons.Default.CreateNewFolder, contentDescription = null, tint = VaultAccentPrimary, modifier = Modifier.size(17.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(strings.newFolderBtn, color = CalcTextPrimary, maxLines = 1)
             }
@@ -1255,7 +1286,7 @@ private fun VaultImportBottomSheetContent(
                     .weight(1f)
                     .height(46.dp)
             ) {
-                Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = null, tint = CalcAccentOrange, modifier = Modifier.size(17.dp))
+                Icon(Icons.AutoMirrored.Filled.NoteAdd, contentDescription = null, tint = CalcAccentCopper, modifier = Modifier.size(17.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(strings.newSecretNoteBtn, color = CalcTextPrimary, maxLines = 1)
             }
@@ -1321,9 +1352,9 @@ private fun FileActionsDialog(
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.Default.Download, contentDescription = null, tint = VaultCyanPrimary, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Download, contentDescription = null, tint = VaultAccentPrimary, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(strings.restoreBtn, color = VaultCyanPrimary, maxLines = 1)
+                        Text(strings.restoreBtn, color = VaultAccentPrimary, maxLines = 1)
                     }
                 }
             }
@@ -1333,7 +1364,7 @@ private fun FileActionsDialog(
                 onClick = onOpenInMemory,
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = VaultCyanPrimary,
+                    containerColor = VaultAccentPrimary,
                     contentColor = Color(0xFF06202B)
                 )
             ) {
@@ -1429,4 +1460,19 @@ private fun CreateEncryptedNoteDialog(
             }
         }
     )
+}
+
+/** Keep the vault session only across a known, result-producing Android system UI. */
+private fun <I> ActivityResultLauncher<I>.launchWithVaultGuard(
+    input: I,
+    onExternalActivityStarted: () -> Unit,
+    onExternalActivityFinished: () -> Unit
+) {
+    onExternalActivityStarted()
+    try {
+        launch(input)
+    } catch (e: Exception) {
+        onExternalActivityFinished()
+        throw e
+    }
 }

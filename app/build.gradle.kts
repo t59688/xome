@@ -8,6 +8,33 @@ plugins {
   alias(libs.plugins.google.services)
 }
 
+fun deriveVersionCode(versionName: String): Int {
+  val m = Regex("""^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$""")
+    .matchEntire(versionName) ?: error("Invalid VERSION: $versionName")
+  val major = m.groupValues[1].toInt()
+  val minor = m.groupValues[2].toInt()
+  val patch = m.groupValues[3].toInt()
+  val beta = m.groupValues[4].takeIf { it.isNotBlank() }?.toInt()
+  require(major in 0..214 && minor in 0..99 && patch in 0..99)
+  require(beta == null || beta in 1..998)
+  val code = (major * 10000L + minor * 100L + patch) * 1000L + (beta ?: 999)
+  require(code in 1..Int.MAX_VALUE.toLong())
+  return code.toInt()
+}
+
+val fileVersion = rootProject.file("VERSION").readText().trim()
+val appVersionName = System.getenv("VERSION_NAME") ?: fileVersion
+val appVersionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: deriveVersionCode(appVersionName)
+val releaseKeystorePath = System.getenv("KEYSTORE_PATH") ?: "my-upload-key.jks"
+val releaseKeystore = rootProject.file(releaseKeystorePath)
+val releaseStorePassword = System.getenv("STORE_PASSWORD")
+val releaseKeyPassword = System.getenv("KEY_PASSWORD")
+val releaseKeyAlias = System.getenv("KEY_ALIAS") ?: "upload"
+val hasReleaseSigning = releaseKeystore.isFile && !releaseStorePassword.isNullOrBlank() && !releaseKeyPassword.isNullOrBlank()
+if (gradle.startParameter.taskNames.any { it.contains("release", ignoreCase = true) } && !hasReleaseSigning) {
+  error("Xome release signing missing: set KEYSTORE_PATH, STORE_PASSWORD, KEY_PASSWORD, KEY_ALIAS")
+}
+
 android {
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -16,8 +43,8 @@ android {
     applicationId = "com.aizeek.xome"
     minSdk = 29
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = appVersionCode
+    versionName = appVersionName
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -26,11 +53,12 @@ android {
   // and updating Android apps in AI Studio.
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
+      if (hasReleaseSigning) {
+        storeFile = releaseKeystore
+        storePassword = releaseStorePassword
+        keyAlias = releaseKeyAlias
+        keyPassword = releaseKeyPassword
+      }
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
@@ -47,7 +75,7 @@ android {
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
-      signingConfig = signingConfigs.getByName("release")
+      if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
     }
     debug {
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in

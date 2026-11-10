@@ -1,11 +1,21 @@
 package com.example
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Bundle
+import android.graphics.Color as AndroidColor
+import android.os.Handler
+import android.os.Looper
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.SystemBarStyle
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
@@ -14,9 +24,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.lifecycle.DefaultLifecycleObserver
-import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.crypto.VaultExternalUiLockPolicy
 import com.example.crypto.VaultSessionManager
 import com.example.ui.calculator.DisguisedCalculatorScreen
 import com.example.ui.i18n.LocalAppStrings
@@ -31,18 +40,75 @@ import com.example.viewmodel.XomeViewModel
 class MainActivity : ComponentActivity() {
 
     private val viewModel: XomeViewModel by viewModels()
+    private val externalUiLockPolicy = VaultExternalUiLockPolicy()
+    private var viewerNeedsDarkStatusBarIcons: Boolean? = null
+    private val lockHandler = Handler(Looper.getMainLooper())
+    private val externalUiTimeout = Runnable {
+        externalUiLockPolicy.onResultOrFailure()
+        VaultSessionManager.lock()
+    }
+    private val screenOffReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_SCREEN_OFF) {
+                finishExternalVaultUi()
+                VaultSessionManager.lock()
+            }
+        }
+    }
+
+    private fun startExternalVaultUi() {
+        if (VaultSessionManager.activeSession.value != null) {
+            externalUiLockPolicy.onLaunch()
+        }
+    }
+
+    private fun finishExternalVaultUi() {
+        externalUiLockPolicy.onResultOrFailure()
+        lockHandler.removeCallbacks(externalUiTimeout)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        applyDarkSystemBars()
+        // A resume without a delivered activity result is not an authorized picker return.
+        if (externalUiLockPolicy.shouldLockOnResume()) {
+            finishExternalVaultUi()
+            VaultSessionManager.lock()
+        }
+    }
+
+    override fun onStop() {
+        if (externalUiLockPolicy.shouldLockOnStop()) {
+            VaultSessionManager.lock()
+        } else {
+            // Prevent an abandoned system picker from retaining a live key indefinitely.
+            lockHandler.removeCallbacks(externalUiTimeout)
+            lockHandler.postDelayed(externalUiTimeout, EXTERNAL_UI_GRACE_MS)
+        }
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        unregisterReceiver(screenOffReceiver)
+        finishExternalVaultUi()
+        VaultSessionManager.lock()
+        super.onDestroy()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ContextCompat.registerReceiver(
+            this,
+            screenOffReceiver,
+            IntentFilter(Intent.ACTION_SCREEN_OFF),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
-        // Module 6.2: Instant lifecycle lock on Home button, task switch, or screen-off
-        lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStop(owner: LifecycleOwner) {
-                VaultSessionManager.lock()
-            }
-        })
-
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(AndroidColor.TRANSPARENT)
+        )
+        applyDarkSystemBars()
         setContent {
             val activeSession by viewModel.activeSession.collectAsStateWithLifecycle()
             val flagSecureEnabled by viewModel.flagSecureWindowEnabled.collectAsStateWithLifecycle()
@@ -63,15 +129,43 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = CalcChassisBg
                 ) {
-                    XomeRootHost(viewModel = viewModel)
+                    XomeRootHost(
+                        viewModel = viewModel,
+                        onExternalActivityStarted = ::startExternalVaultUi,
+                        onExternalActivityFinished = ::finishExternalVaultUi,
+                        onViewerStatusBarContrastChanged = ::onViewerStatusBarContrastChanged
+                    )
                 }
             }
         }
     }
+
+    private fun onViewerStatusBarContrastChanged(darkIcons: Boolean?) {
+        viewerNeedsDarkStatusBarIcons = darkIcons
+        applyDarkSystemBars()
+    }
+
+    private fun applyDarkSystemBars() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = viewerNeedsDarkStatusBarIcons ?: false
+            isAppearanceLightNavigationBars = false
+        }
+        window.isStatusBarContrastEnforced = false
+        window.isNavigationBarContrastEnforced = false
+    }
+
+    private companion object {
+        const val EXTERNAL_UI_GRACE_MS = 5 * 60 * 1000L
+    }
 }
 
 @Composable
-fun XomeRootHost(viewModel: XomeViewModel) {
+fun XomeRootHost(
+    viewModel: XomeViewModel,
+    onExternalActivityStarted: () -> Unit,
+    onExternalActivityFinished: () -> Unit,
+    onViewerStatusBarContrastChanged: (Boolean?) -> Unit
+) {
     val appLanguage by viewModel.appLanguage.collectAsStateWithLifecycle()
     val activeSession by viewModel.activeSession.collectAsStateWithLifecycle()
     val calcState by viewModel.calcState.collectAsStateWithLifecycle()
@@ -132,8 +226,9 @@ fun XomeRootHost(viewModel: XomeViewModel) {
                             imageFiles = imageFilesInFolder,
                             initialFileId = activeImageViewerFileId!!,
                             onClose = viewModel::closeImageViewer,
-                            onExportFile = viewModel::exportFileToPublicStorage,
-                            onShredFile = viewModel::shredVaultFile
+                            onExportFile = viewModel::exportFileFromViewer,
+                            onShredFile = viewModel::shredVaultFile,
+                            onStatusBarContrastChanged = onViewerStatusBarContrastChanged
                         )
                     }
                     activeDocViewerFile != null -> {
@@ -141,7 +236,7 @@ fun XomeRootHost(viewModel: XomeViewModel) {
                             fileEntity = activeDocViewerFile!!,
                             decryptedContent = decryptedDocText ?: "",
                             onClose = viewModel::closeDocumentViewer,
-                            onExportFile = viewModel::exportFileToPublicStorage,
+                            onExportFile = viewModel::exportFileFromViewer,
                             onShredFile = viewModel::shredVaultFile
                         )
                     }
@@ -163,6 +258,7 @@ fun XomeRootHost(viewModel: XomeViewModel) {
                             securityReport = securityReport,
                             flagSecureEnabled = flagSecureEnabled,
                             isStreamingEmulator = viewModel.isStreamingEmulator,
+                            updateRepository = viewModel.updates,
                             onToggleFlagSecure = viewModel::setFlagSecureWindowEnabled,
                             onToggleLanguage = viewModel::toggleAppLanguage,
                             onSelectLanguage = viewModel::setAppLanguage,
@@ -185,7 +281,9 @@ fun XomeRootHost(viewModel: XomeViewModel) {
                             onExportSelfHealingArchive = viewModel::exportSelfHealingBundleToUri,
                             onImportSelfHealingArchive = viewModel::importSelfHealingBundleFromUri,
                             onLockVault = viewModel::lockVaultImmediately,
-                            onDismissBanner = viewModel::dismissBanner
+                            onDismissBanner = viewModel::dismissBanner,
+                            onExternalActivityStarted = onExternalActivityStarted,
+                            onExternalActivityFinished = onExternalActivityFinished
                         )
                     }
                 }

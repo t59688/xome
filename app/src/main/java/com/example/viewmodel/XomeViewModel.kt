@@ -16,9 +16,15 @@ import com.example.data.VaultFolderEntity
 import com.example.data.VaultSpaceMetaEntity
 import com.example.storage.VaultStorageManager
 import com.example.ui.i18n.AppLanguage
+import com.example.update.UpdateRepository
 import java.io.File
 import java.util.Arrays
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -41,8 +47,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         val isDegreeMode: Boolean = true,
         val isScientificExpanded: Boolean = true,
         val isHistoryVisible: Boolean = false,
-        val history: List<ScientificCalculatorEngine.CalcHistoryEntry> = emptyList(),
-        val isVerifyingBlindSequence: Boolean = false
+        val history: List<ScientificCalculatorEngine.CalcHistoryEntry> = emptyList()
     )
 
     data class ImportProgressState(
@@ -60,6 +65,8 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private val appContext = application.applicationContext
+    // Deliberately passive until explicitly opened in the unlocked settings screen.
+    val updates = UpdateRepository(appContext)
     private val uiPrefs = appContext.getSharedPreferences("xome_ui_prefs", android.content.Context.MODE_PRIVATE)
 
     private val _appLanguage = MutableStateFlow(loadSavedLanguage())
@@ -93,6 +100,15 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     // Disguised Calculator state
     private val _calcState = MutableStateFlow(CalculatorUiState())
     val calcState: StateFlow<CalculatorUiState> = _calcState.asStateFlow()
+    private val hiddenUnlockEpoch = AtomicLong(0L)
+    private var hiddenUnlockJob: Job? = null
+    private val hiddenUnlockMutex = Mutex()
+
+    private fun invalidateHiddenUnlock() {
+        hiddenUnlockEpoch.incrementAndGet()
+        hiddenUnlockJob?.cancel()
+        hiddenUnlockJob = null
+    }
 
     // Active Vault Session state
     val activeSession: StateFlow<VaultSessionManager.ActiveVaultSession?> =
@@ -216,6 +232,8 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             VaultSessionManager.activeSession.collect { session ->
                 if (session == null) {
+                    // Vault operation messages must never be visible on the disguised calculator.
+                    _statusBanner.value = null
                     _currentFolderId.value = null
                     _folderBreadcrumbs.value = emptyList()
                     _searchQuery.value = ""
@@ -340,9 +358,8 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     // ------------------------------------------------------------------------
 
     fun onCalculatorInput(token: String) {
+        invalidateHiddenUnlock()
         val current = _calcState.value
-        if (current.isVerifyingBlindSequence) return
-
         val baseExpr = if (current.expression.isEmpty() &&
             current.lastResult.isNotEmpty() &&
             token in listOf("+", "−", "×", "÷", "^", "%")
@@ -362,6 +379,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onCalculatorClear() {
+        invalidateHiddenUnlock()
         _calcState.value = _calcState.value.copy(
             expression = "",
             livePreview = "",
@@ -370,6 +388,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onCalculatorBackspace() {
+        invalidateHiddenUnlock()
         val current = _calcState.value
         if (current.expression.isEmpty()) return
         val dropCount = when {
@@ -414,77 +433,76 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     fun onCalculatorEqualsPressed() {
         val current = _calcState.value
         val rawExpr = current.expression.trim()
-        if (rawExpr.isEmpty() || current.isVerifyingBlindSequence) return
+        if (rawExpr.isEmpty()) return
+        invalidateHiddenUnlock()
+        // Render a normal calculator result immediately; checking runs unobtrusively.
+        performNormalMathEvaluation(rawExpr)
 
         val normalizedCandidate = rawExpr
             .replace("−", "-")
             .replace("×", "*")
             .replace("÷", "/")
 
-        if (normalizedCandidate.length !in 4..16) {
-            performNormalMathEvaluation(rawExpr)
-            return
-        }
+        if (normalizedCandidate.length !in 4..16) return
 
-        _calcState.value = current.copy(isVerifyingBlindSequence = true)
-        viewModelScope.launch {
-            val hasSpaces = withContext(Dispatchers.IO) {
-                VaultStorageManager.hasExistingSpaces(appContext)
-            }
-
-            if (!hasSpaces && normalizedCandidate == "1314") {
-                val pinChars = "1314".toCharArray()
+        val attemptEpoch = hiddenUnlockEpoch.get()
+        hiddenUnlockJob = viewModelScope.launch {
+            hiddenUnlockMutex.withLock {
                 try {
-                    VaultStorageManager.provisionNewSpace(
+                    val hasSpaces = withContext(Dispatchers.IO) {
+                        VaultStorageManager.hasExistingSpaces(appContext)
+                    }
+
+                    if (hiddenUnlockEpoch.get() != attemptEpoch) return@launch
+                    if (!hasSpaces && normalizedCandidate == "1314") {
+                        val pinChars = "1314".toCharArray()
+                        try {
+                            VaultStorageManager.provisionNewSpace(
+                                context = appContext,
+                                pinChars = pinChars,
+                                spaceAlias = if (isZh()) "主空间" else "Main Space",
+                                isDecoy = false,
+                                seedSampleFiles = true,
+                                activateImmediately = true
+                            )
+                            refreshSelfHealingStatus()
+                            _calcState.value = _calcState.value.copy(
+                                expression = "",
+                                livePreview = "",
+                                lastResult = ""
+                            )
+                            return@launch
+                        } finally {
+                            Arrays.fill(pinChars, '\u0000')
+                        }
+                    }
+
+                    if (!hasSpaces) return@launch
+
+                    val canActivate = { hiddenUnlockEpoch.get() == attemptEpoch }
+                    if (!canActivate()) return@launch
+                    val unlockedSession = VaultStorageManager.tryBlindUnlock(
                         context = appContext,
-                        pinChars = pinChars,
-                        spaceAlias = if (isZh()) "主空间" else "Main Space",
-                        isDecoy = false,
-                        seedSampleFiles = true,
-                        activateImmediately = true
-                    )
-                    refreshSelfHealingStatus()
-                    _calcState.value = _calcState.value.copy(
-                        expression = "",
-                        livePreview = "",
-                        lastResult = "",
-                        isVerifyingBlindSequence = false
-                    )
-                    showBanner(
-                        if (isZh()) "已通过默认密码 1314 创建并解锁空间"
-                        else "Unlocked space with default sequence 1314"
-                    )
-                    return@launch
-                } finally {
-                    Arrays.fill(pinChars, '\u0000')
+                        rawSequence = normalizedCandidate,
+                        canActivate = canActivate
+                    ) ?: if (normalizedCandidate != rawExpr && canActivate()) {
+                        VaultStorageManager.tryBlindUnlock(appContext, rawExpr, canActivate)
+                    } else {
+                        null
+                    }
+
+                    if (unlockedSession != null && canActivate()) {
+                        _calcState.value = _calcState.value.copy(
+                            expression = "",
+                            livePreview = "",
+                            lastResult = ""
+                        )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // A corrupt header or storage error must not reveal the hidden matching flow.
                 }
-            }
-
-            if (!hasSpaces) {
-                _calcState.value = _calcState.value.copy(isVerifyingBlindSequence = false)
-                performNormalMathEvaluation(rawExpr)
-                return@launch
-            }
-
-            val unlockedSession = VaultStorageManager.tryBlindUnlock(
-                context = appContext,
-                rawSequence = normalizedCandidate
-            ) ?: if (normalizedCandidate != rawExpr) {
-                VaultStorageManager.tryBlindUnlock(appContext, rawExpr)
-            } else {
-                null
-            }
-
-            if (unlockedSession != null) {
-                _calcState.value = _calcState.value.copy(
-                    expression = "",
-                    livePreview = "",
-                    lastResult = "",
-                    isVerifyingBlindSequence = false
-                )
-            } else {
-                _calcState.value = _calcState.value.copy(isVerifyingBlindSequence = false)
-                performNormalMathEvaluation(rawExpr)
             }
         }
     }
@@ -750,6 +768,20 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             session.database.vaultDao().renameFile(fileEntity.id, clean)
             showBanner(if (isZh()) "已重命名为「$clean」" else "Renamed to \"$clean\"")
+        }
+    }
+
+    fun exportFileFromViewer(
+        fileEntity: VaultFileEntity,
+        onComplete: (Result<String>) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = try {
+                VaultStorageManager.exportEncryptedFileToPublicDownloads(appContext, fileEntity)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            onComplete(result)
         }
     }
 
