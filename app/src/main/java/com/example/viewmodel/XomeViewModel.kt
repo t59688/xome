@@ -18,6 +18,7 @@ import com.example.storage.VaultStorageManager
 import com.example.ui.i18n.AppLanguage
 import com.example.update.UpdateRepository
 import java.io.File
+import java.security.MessageDigest
 import java.util.Arrays
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
@@ -893,6 +894,46 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     // Zero Re-encryption Password Change & Multi-Space Creation
     // ------------------------------------------------------------------------
 
+    /** Verify the current space credential without opening a second session or modifying data. */
+    fun verifyCurrentSpaceSequence(
+        sequence: String,
+        onComplete: (Boolean) -> Unit
+    ) {
+        val currentSession = activeSession.value
+        if (currentSession == null || sequence.trim().length !in 4..16) {
+            onComplete(false)
+            return
+        }
+        viewModelScope.launch {
+            val chars = sequence.trim().toCharArray()
+            val valid = try {
+                withContext(Dispatchers.Default) {
+                    val header = VaultCryptoEngine.parseSpaceHeader(currentSession.headerFile)
+                        ?: return@withContext false
+                    val unwrapped = VaultCryptoEngine.tryUnlockSpaceHeader(header, chars)
+                        ?: return@withContext false
+                    try {
+                        val currentKey = currentSession.borrowMasterKeyCopy()
+                        try {
+                            MessageDigest.isEqual(unwrapped, currentKey)
+                        } finally {
+                            Arrays.fill(currentKey, 0.toByte())
+                        }
+                    } finally {
+                        Arrays.fill(unwrapped, 0.toByte())
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                false
+            } finally {
+                Arrays.fill(chars, '\u0000')
+            }
+            onComplete(valid && activeSession.value === currentSession)
+        }
+    }
+
     fun changeCurrentSpaceSequence(
         oldSequence: String,
         newSequence: String,
@@ -960,6 +1001,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                         if (isZh()) "当前解锁序列不正确" else "Current sequence is incorrect."
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                onComplete(false, if (isZh()) "修改失败，请重试" else "Could not update the sequence. Try again.")
             } finally {
                 Arrays.fill(oldChars, '\u0000')
                 Arrays.fill(newChars, '\u0000')
@@ -972,6 +1017,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         confirmSequence: String,
         spaceAlias: String,
         isDecoy: Boolean,
+        includeSampleFiles: Boolean,
         switchToNewSpaceImmediately: Boolean = false,
         onComplete: (Boolean, String) -> Unit
     ) {
@@ -994,18 +1040,17 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            val alreadyUsed = VaultStorageManager.isSequenceAlreadyUsed(appContext, cleanSeq)
-            if (alreadyUsed) {
-                onComplete(
-                    false,
-                    if (isZh()) "该序列已被现有空间使用，请设置不同序列" else "This sequence is already used by another space."
-                )
-                return@launch
-            }
-
             val pinChars = cleanSeq.toCharArray()
             try {
-                val created = VaultStorageManager.provisionNewSpace(
+                val alreadyUsed = VaultStorageManager.isSequenceAlreadyUsed(appContext, cleanSeq)
+                if (alreadyUsed) {
+                    onComplete(
+                        false,
+                        if (isZh()) "该序列已被现有空间使用，请设置不同序列" else "This sequence is already used by another space."
+                    )
+                    return@launch
+                }
+                VaultStorageManager.provisionNewSpace(
                     context = appContext,
                     pinChars = pinChars,
                     spaceAlias = spaceAlias.ifBlank {
@@ -1013,19 +1058,21 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                         else (if (isDecoy) "Guest Space" else "Private Space")
                     },
                     isDecoy = isDecoy,
-                    seedSampleFiles = true,
+                    seedSampleFiles = includeSampleFiles,
                     activateImmediately = switchToNewSpaceImmediately
                 )
                 refreshSelfHealingStatus()
                 val msg = if (isZh()) {
-                    "已创建新空间（计算器输入 $cleanSeq= 即可进入）"
+                    "独立空间已创建"
                 } else {
-                    "Created new space (${created.spaceId})"
+                    "Independent space created"
                 }
                 showBanner(msg)
                 onComplete(true, msg)
-            } catch (e: Exception) {
-                onComplete(false, "Failed: ${e.message}")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                onComplete(false, if (isZh()) "创建失败，请重试" else "Could not create the space. Try again.")
             } finally {
                 Arrays.fill(pinChars, '\u0000')
             }

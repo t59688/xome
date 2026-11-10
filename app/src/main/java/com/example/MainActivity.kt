@@ -277,6 +277,7 @@ fun XomeRootHost(
                             onShredFile = viewModel::shredVaultFile,
                             onRenameFile = viewModel::renameVaultFile,
                             onChangeSequence = viewModel::changeCurrentSpaceSequence,
+                            onVerifyCurrentSequence = viewModel::verifyCurrentSpaceSequence,
                             onCreateDecoySpace = viewModel::createIndependentDecoySpace,
                             onExportSelfHealingArchive = viewModel::exportSelfHealingBundleToUri,
                             onImportSelfHealingArchive = viewModel::importSelfHealingBundleFromUri,

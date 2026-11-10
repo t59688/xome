@@ -173,7 +173,8 @@ fun VaultSpaceScreen(
     onShredFile: (VaultFileEntity) -> Unit,
     onRenameFile: (VaultFileEntity, String) -> Unit,
     onChangeSequence: (String, String, String, (Boolean, String) -> Unit) -> Unit,
-    onCreateDecoySpace: (String, String, String, Boolean, Boolean, (Boolean, String) -> Unit) -> Unit,
+    onVerifyCurrentSequence: (String, (Boolean) -> Unit) -> Unit,
+    onCreateDecoySpace: (String, String, String, Boolean, Boolean, Boolean, (Boolean, String) -> Unit) -> Unit,
     onExportSelfHealingArchive: (android.net.Uri) -> Unit,
     onImportSelfHealingArchive: (android.net.Uri) -> Unit,
     onLockVault: () -> Unit,
@@ -483,6 +484,7 @@ fun VaultSpaceScreen(
                     onToggleFlagSecure = onToggleFlagSecure,
                     onSelectLanguage = onSelectLanguage,
                     onChangeSequence = onChangeSequence,
+                    onVerifyCurrentSequence = onVerifyCurrentSequence,
                     onCreateDecoySpace = onCreateDecoySpace,
                     onExportSelfHealingArchive = {
                         exportArchiveLauncher.launchWithVaultGuard(
