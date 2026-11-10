@@ -8,7 +8,7 @@ import java.io.IOException
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 
-/** Explicit user-initiated lookup; never invoked on the disguised calculator screen. */
+/** Release metadata lookup shared by foreground periodic checks and manual checks. */
 class GitHubUpdateClient {
     suspend fun latestRelease(channel: UpdateChannel = UpdateChannel.STABLE): GitHubRelease? =
         withContext(Dispatchers.IO) {

@@ -57,7 +57,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 
-/** No network access or updater UI exists in the disguised calculator route. */
+/** Shared update controls for the calculator entry and unlocked settings. */
 @Composable
 internal fun XomeUpdateSettings(repository: UpdateRepository) {
     val context = LocalContext.current
@@ -78,8 +78,8 @@ internal fun XomeUpdateSettings(repository: UpdateRepository) {
     fun requestInstall() {
         if (!repository.canInstall()) {
             repository.showError(
-                if (zh) "请允许此应用安装 APK，返回后重新解锁并再次点击安装"
-                else "Allow APK installs, then unlock again and tap Install"
+                if (zh) "请允许此应用安装 APK，返回后再次点击安装"
+                else "Allow APK installs, then return and tap Install again"
             )
             try {
                 context.startActivity(repository.installPermissionIntent())
@@ -154,7 +154,7 @@ internal fun XomeUpdateSettings(repository: UpdateRepository) {
 
             Text(
                 text = when (state.phase) {
-                    UpdatePhase.IDLE -> if (zh) "仅手动检查更新" else "Updates are checked only on request"
+                    UpdatePhase.IDLE -> if (zh) "使用应用时自动定期检查，也可手动检查" else "Checked periodically while using the app; manual checks are also available"
                     UpdatePhase.CHECKING -> if (zh) "正在查询 GitHub…" else "Checking GitHub…"
                     UpdatePhase.AVAILABLE -> if (zh) "发现新版本 ${state.release?.version?.name}" else "New version ${state.release?.version?.name}"
                     UpdatePhase.DOWNLOADING -> if (zh) "下载中 ${updateBytes(state.downloadedBytes)} / ${updateBytes(state.totalBytes)}"
