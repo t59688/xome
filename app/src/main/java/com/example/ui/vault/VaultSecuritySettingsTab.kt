@@ -78,6 +78,9 @@ fun VaultSecuritySettingsTab(
     totalFilesCount: Int,
     totalPlainBytes: Long,
     securityReport: RootSecurityDetector.EnvironmentSecurityReport,
+    flagSecureEnabled: Boolean,
+    isStreamingEmulator: Boolean,
+    onToggleFlagSecure: (Boolean) -> Unit,
     onChangeSequence: (oldSeq: String, newSeq: String, confirmSeq: String, cb: (Boolean, String) -> Unit) -> Unit,
     onCreateDecoySpace: (seq: String, confirmSeq: String, alias: String, isDecoy: Boolean, switchNow: Boolean, cb: (Boolean, String) -> Unit) -> Unit,
     onExportSelfHealingArchive: () -> Unit,
@@ -103,8 +106,13 @@ fun VaultSecuritySettingsTab(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // 1. Module 6.3: Root / Hook Environment Non-Blocking Security Banner
-        RootEnvironmentSecurityCard(report = securityReport)
+        // 1. Module 6.1 & 6.3: Root / Hook Environment & FLAG_SECURE Window Control
+        RootEnvironmentSecurityCard(
+            report = securityReport,
+            flagSecureEnabled = flagSecureEnabled,
+            isStreamingEmulator = isStreamingEmulator,
+            onToggleFlagSecure = onToggleFlagSecure
+        )
 
         // 2. Active Space 128-Byte Binary Envelope Header Inspector
         BinaryHeaderInspectorCard(
@@ -501,7 +509,10 @@ fun VaultSecuritySettingsTab(
 
 @Composable
 private fun RootEnvironmentSecurityCard(
-    report: RootSecurityDetector.EnvironmentSecurityReport
+    report: RootSecurityDetector.EnvironmentSecurityReport,
+    flagSecureEnabled: Boolean,
+    isStreamingEmulator: Boolean,
+    onToggleFlagSecure: (Boolean) -> Unit
 ) {
     val bgColor = if (report.isRootOrHookDetected) {
         VaultAmberWarning.copy(alpha = 0.14f)
@@ -522,35 +533,68 @@ private fun RootEnvironmentSecurityCard(
             .fillMaxWidth()
             .testTag("root_security_banner")
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.Top,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Icon(
-                imageVector = if (report.isRootOrHookDetected) Icons.Default.WarningAmber else Icons.Default.CheckCircle,
-                contentDescription = null,
-                tint = if (report.isRootOrHookDetected) VaultAmberWarning else VaultEmeraldSuccess,
-                modifier = Modifier.size(22.dp)
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text = if (report.isRootOrHookDetected) {
-                        "Root / Hook Environment Risk Notice"
-                    } else {
-                        "Environment Integrity Verified • FLAG_SECURE Active"
-                    },
-                    style = MaterialTheme.typography.titleMedium,
-                    color = if (report.isRootOrHookDetected) VaultAmberWarning else VaultEmeraldSuccess
+            Row(
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = if (report.isRootOrHookDetected) Icons.Default.WarningAmber else Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = if (report.isRootOrHookDetected) VaultAmberWarning else VaultEmeraldSuccess,
+                    modifier = Modifier.size(22.dp)
                 )
-                Text(
-                    text = if (report.isRootOrHookDetected) {
-                        "Privileged Root (su/Magisk) or Xposed hooks were detected (${report.findings.joinToString()}). System-level FLAG_SECURE screenshot protection could be bypassed by root processes."
-                    } else {
-                        "No su binaries, Magisk mounts, or Xposed hooks detected. Window FLAG_SECURE is enforced and Lifecycle.onStop() instant-wipes the MasterKey."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = CalcTextPrimary
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = if (report.isRootOrHookDetected) {
+                            "Root / Hook Environment Risk Notice"
+                        } else {
+                            "Environment Integrity Verified • Auto-Lock Active"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (report.isRootOrHookDetected) VaultAmberWarning else VaultEmeraldSuccess
+                    )
+                    Text(
+                        text = if (report.isRootOrHookDetected) {
+                            "Privileged Root (su/Magisk) or Xposed hooks were detected (${report.findings.joinToString()}). System-level FLAG_SECURE screenshot protection could be bypassed by root processes."
+                        } else {
+                            "No su binaries, Magisk mounts, or Xposed hooks detected. Lifecycle.onStop() instant-wipes the MasterKey via Arrays.fill."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = CalcTextPrimary
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Hardware Window FLAG_SECURE",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = CalcTextPrimary
+                    )
+                    Text(
+                        text = if (isStreamingEmulator) {
+                            "Cloud Streaming Emulator detected: keep OFF while previewing in browser (enabling blacks out video stream)"
+                        } else {
+                            "Blocks screenshots, ADB screenrecord & recents previews"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CalcTextSecondary
+                    )
+                }
+                Switch(
+                    checked = flagSecureEnabled,
+                    onCheckedChange = onToggleFlagSecure,
+                    colors = SwitchDefaults.colors(checkedThumbColor = VaultEmeraldSuccess),
+                    modifier = Modifier.testTag("flag_secure_switch")
                 )
             }
         }

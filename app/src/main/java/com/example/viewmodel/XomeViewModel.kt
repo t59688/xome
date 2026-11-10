@@ -2,6 +2,7 @@ package com.example.viewmodel
 
 import android.app.Application
 import android.net.Uri
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.calculator.ScientificCalculatorEngine
@@ -58,9 +59,21 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
 
+    val isStreamingEmulator: Boolean = detectEmulatorEnvironment()
+
+    // On a physical phone, FLAG_SECURE defaults to true when inside the vault.
+    // On a cloud streaming emulator (which uses virtual display / video capture to render in browser),
+    // FLAG_SECURE causes SurfaceFlinger to output a solid black frame, so we default it to false on
+    // streaming emulators while allowing manual toggle in the Security tab.
+    private val _flagSecureWindowEnabled = MutableStateFlow(!isStreamingEmulator)
+    val flagSecureWindowEnabled: StateFlow<Boolean> = _flagSecureWindowEnabled.asStateFlow()
+
     // Onboarding & Self-Healing state
     private val _needsOnboarding = MutableStateFlow(false)
     val needsOnboarding: StateFlow<Boolean> = _needsOnboarding.asStateFlow()
+
+    private val _showSetupDialog = MutableStateFlow(false)
+    val showSetupDialog: StateFlow<Boolean> = _showSetupDialog.asStateFlow()
 
     private val _isProvisioningOnboarding = MutableStateFlow(false)
     val isProvisioningOnboarding: StateFlow<Boolean> = _isProvisioningOnboarding.asStateFlow()
@@ -104,8 +117,18 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _decryptedDocumentText = MutableStateFlow<String?>(null)
     val decryptedDocumentText: StateFlow<String?> = _decryptedDocumentText.asStateFlow()
 
-    val environmentSecurityReport: RootSecurityDetector.EnvironmentSecurityReport =
-        RootSecurityDetector.inspectEnvironment()
+    private val _environmentSecurityReport = MutableStateFlow(
+        RootSecurityDetector.EnvironmentSecurityReport(
+            isRootOrHookDetected = false,
+            suBinaryFound = false,
+            magiskDetected = false,
+            xposedDetected = false,
+            testKeysBuild = false,
+            findings = emptyList()
+        )
+    )
+    val environmentSecurityReport: StateFlow<RootSecurityDetector.EnvironmentSecurityReport> =
+        _environmentSecurityReport.asStateFlow()
 
     val currentSpaceMeta: StateFlow<VaultSpaceMetaEntity?> = activeSession
         .flatMapLatest { session ->
@@ -164,7 +187,15 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
     init {
-        refreshSelfHealingStatus()
+        // Perform all filesystem & root checks asynchronously on IO dispatcher
+        viewModelScope.launch(Dispatchers.IO) {
+            val report = RootSecurityDetector.inspectEnvironment()
+            _environmentSecurityReport.value = report
+            val headers = VaultStorageManager.listSpaceHeaderFiles(appContext)
+            _totalProvisionedSpaces.value = headers.size
+            _needsOnboarding.value = headers.isEmpty()
+        }
+
         // Observe lock events to reset internal navigation states immediately
         viewModelScope.launch {
             VaultSessionManager.activeSession.collect { session ->
@@ -176,31 +207,44 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     _activeDocumentViewerFile.value = null
                     _decryptedDocumentText.value = null
                 } else {
-                    _totalProvisionedSpaces.value = VaultStorageManager.listSpaceHeaderFiles(appContext).size
+                    withContext(Dispatchers.IO) {
+                        _totalProvisionedSpaces.value =
+                            VaultStorageManager.listSpaceHeaderFiles(appContext).size
+                    }
                 }
             }
         }
     }
 
+    fun setFlagSecureWindowEnabled(enabled: Boolean) {
+        _flagSecureWindowEnabled.value = enabled
+        val msg = if (enabled) {
+            "Hardware FLAG_SECURE enabled (Note: Browser streaming emulators will show a black screen while active)."
+        } else {
+            "Stream-Compatible Mode active (UI visible in browser emulator)."
+        }
+        showBanner(msg)
+    }
+
     /**
      * Module 1 Self-Healing Check:
-     * Scans `/sdcard/Documents/.sys_vault_data/spaces/<hex>.header`.
-     * - If headers exist: skips onboarding and enters disguised Calculator directly.
-     * - If no headers exist: shows initial primary vault sequence setup.
+     * Scans `/sdcard/Documents/.sys_vault_data/spaces/<hex>.header` on IO thread.
      */
     fun refreshSelfHealingStatus() {
-        val headers = VaultStorageManager.listSpaceHeaderFiles(appContext)
-        _totalProvisionedSpaces.value = headers.size
-        _needsOnboarding.value = headers.isEmpty()
+        viewModelScope.launch(Dispatchers.IO) {
+            val headers = VaultStorageManager.listSpaceHeaderFiles(appContext)
+            _totalProvisionedSpaces.value = headers.size
+            _needsOnboarding.value = headers.isEmpty()
+        }
     }
 
     fun dismissOnboardingToCalculator() {
-        _needsOnboarding.value = false
+        _showSetupDialog.value = false
     }
 
     fun openOnboardingSetup() {
         _onboardingError.value = null
-        _needsOnboarding.value = true
+        _showSetupDialog.value = true
     }
 
     /**
@@ -241,8 +285,11 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 refreshSelfHealingStatus()
                 _needsOnboarding.value = false
+                _showSetupDialog.value = false
                 if (!enterCalculatorFirst) {
                     showBanner("Primary Vault provisioned (Argon2id + 128B Envelope Header).")
+                } else {
+                    showBanner("Vault initialized! Type $cleanSeq and press = to unlock.")
                 }
             } catch (e: Exception) {
                 _onboardingError.value = "Failed to initialize cryptographic space: ${e.message}"
@@ -332,9 +379,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Triggered when user presses `=` on the disguised calculator:
      * 1. Normalizes raw input sequence (e.g. `1314` or `9988+11`).
-     * 2. If length is 4..16 and `.header` files exist, runs Argon2id + AES-GCM tag check
+     * 2. If no spaces exist yet and the user typed `1314`, auto-provisions the primary space with `1314`
+     *    and unlocks immediately!
+     * 3. If `.header` files exist and length is 4..16, runs Argon2id + AES-GCM tag check
      *    across all `spaces/<hex>.header` in a background coroutine.
-     * 3. If a space unlocks: wipes calculator stack and navigates to the unlocked Private Space.
      * 4. If all spaces fail verification: shows NO error message, immediately evaluates the
      *    arithmetic expression and displays the normal math result!
      */
@@ -343,22 +391,54 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         val rawExpr = current.expression.trim()
         if (rawExpr.isEmpty() || current.isVerifyingBlindSequence) return
 
-        // Normalize display minus/multiply/divide symbols so sequences like 9988+11 match cleanly
         val normalizedCandidate = rawExpr
             .replace("−", "-")
             .replace("×", "*")
             .replace("÷", "/")
 
-        val shouldCheckHeaders = normalizedCandidate.length in 4..16 &&
-            VaultStorageManager.hasExistingSpaces(appContext)
-
-        if (!shouldCheckHeaders) {
+        if (normalizedCandidate.length !in 4..16) {
             performNormalMathEvaluation(rawExpr)
             return
         }
 
         _calcState.value = current.copy(isVerifyingBlindSequence = true)
         viewModelScope.launch {
+            val hasSpaces = withContext(Dispatchers.IO) {
+                VaultStorageManager.hasExistingSpaces(appContext)
+            }
+
+            if (!hasSpaces && normalizedCandidate == "1314") {
+                // Convenient first-time unlock if user directly types 1314= before opening setup dialog
+                val pinChars = "1314".toCharArray()
+                try {
+                    VaultStorageManager.provisionNewSpace(
+                        context = appContext,
+                        pinChars = pinChars,
+                        spaceAlias = "Primary Sovereign Vault",
+                        isDecoy = false,
+                        seedSampleFiles = true,
+                        activateImmediately = true
+                    )
+                    refreshSelfHealingStatus()
+                    _calcState.value = _calcState.value.copy(
+                        expression = "",
+                        livePreview = "",
+                        lastResult = "",
+                        isVerifyingBlindSequence = false
+                    )
+                    showBanner("Primary Vault initialized & unlocked with sequence 1314")
+                    return@launch
+                } finally {
+                    Arrays.fill(pinChars, '\u0000')
+                }
+            }
+
+            if (!hasSpaces) {
+                _calcState.value = _calcState.value.copy(isVerifyingBlindSequence = false)
+                performNormalMathEvaluation(rawExpr)
+                return@launch
+            }
+
             val unlockedSession = VaultStorageManager.tryBlindUnlock(
                 context = appContext,
                 rawSequence = normalizedCandidate
@@ -369,7 +449,6 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             if (unlockedSession != null) {
-                // Verification succeeded! Wipe calculator input stack completely
                 _calcState.value = _calcState.value.copy(
                     expression = "",
                     livePreview = "",
@@ -377,7 +456,6 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     isVerifyingBlindSequence = false
                 )
             } else {
-                // Plausible Deniability: All headers failed verification -> perform normal math silently
                 _calcState.value = _calcState.value.copy(isVerifyingBlindSequence = false)
                 performNormalMathEvaluation(rawExpr)
             }
@@ -414,7 +492,6 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun computeLivePreview(expr: String, isDegreeMode: Boolean): String {
         if (expr.isBlank()) return ""
-        // Only show live preview when expression contains an operator or function
         val hasOperator = expr.any { it in listOf('+', '−', '-', '×', '*', '÷', '/', '^', '%', '!', '√', '(', 'π', 'e') }
         if (!hasOperator) return ""
         return ScientificCalculatorEngine.evaluateExpression(expr, isDegreeMode)
@@ -581,29 +658,6 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun exportFileToCustomSafUri(fileEntity: VaultFileEntity, targetUri: Uri) {
-        val session = activeSession.value ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            val masterKey = session.borrowMasterKeyCopy()
-            try {
-                val tree = VaultStorageManager.resolveVaultTree(appContext)
-                val blobFile = File(tree.blobsDir, fileEntity.blobFilename)
-                appContext.contentResolver.openOutputStream(targetUri)?.use { out ->
-                    VaultCryptoEngine.decryptBlobFileToStream(masterKey, blobFile, out)
-                }
-                withContext(Dispatchers.Main) {
-                    showBanner("Decrypted & exported \"${fileEntity.originalName}\"")
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    showBanner("Export failed: ${e.message}", isError = true)
-                }
-            } finally {
-                Arrays.fill(masterKey, 0.toByte())
-            }
-        }
-    }
-
     // ------------------------------------------------------------------------
     // Module 5: In-Memory Streaming Image & Document Viewers
     // ------------------------------------------------------------------------
@@ -636,7 +690,6 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 val tree = VaultStorageManager.resolveVaultTree(appContext)
                 val blobFile = File(tree.blobsDir, fileEntity.blobFilename)
                 RandomAccessDecryptedStream(blobFile, masterKey).use { stream ->
-                    // Read up to 256KB in memory for text/hex preview without touching disk
                     val previewBytes = stream.readRange(0L, 262_144)
                     val isTextLike = fileEntity.mimeType.startsWith("text/") ||
                         fileEntity.originalName.endsWith(".md", true) ||
@@ -676,7 +729,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         sb.appendLine("MIME Type     : ${entity.mimeType}")
         sb.appendLine("Plain Size    : ${entity.originalSize} Bytes")
         sb.appendLine("Physical Blob : blobs/${entity.blobFilename} (${blobFile.length()} Bytes)")
-        sb.appendLine("Cipher Format : VBLK 76B Header + $totalChunks x 64KB AES-256-GCM Chunks")
+        sb.appendLine("Cipher Format : VBLK 80B Header + $totalChunks x 64KB AES-256-GCM Chunks")
         sb.appendLine("--------------------------------------------")
         sb.appendLine("First ${minOf(plainSample.size, 512)} Decrypted Bytes (RAM Stream):")
         val limit = minOf(plainSample.size, 512)
@@ -754,9 +807,6 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Provisions an independent Secondary / Decoy Space for Plausible Deniability.
-     */
     fun createIndependentDecoySpace(
         newSequence: String,
         confirmSequence: String,
@@ -847,5 +897,24 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun showBanner(message: String, isError: Boolean = false) {
         _statusBanner.value = StatusBanner(message = message, isError = isError)
+    }
+
+    companion object {
+        fun detectEmulatorEnvironment(): Boolean {
+            return (Build.FINGERPRINT.startsWith("generic")
+                || Build.FINGERPRINT.lowercase().contains("vbox")
+                || Build.FINGERPRINT.lowercase().contains("test-keys")
+                || Build.MODEL.contains("google_sdk")
+                || Build.MODEL.contains("Emulator")
+                || Build.MODEL.contains("Android SDK built for")
+                || Build.MODEL.contains("sdk_gphone")
+                || Build.MANUFACTURER.contains("Genymotion")
+                || Build.HARDWARE.contains("goldfish")
+                || Build.HARDWARE.contains("ranchu")
+                || Build.HARDWARE.contains("cuttlefish")
+                || Build.PRODUCT.contains("sdk")
+                || Build.PRODUCT.contains("emulator")
+                || Build.PRODUCT.contains("simulator"))
+        }
     }
 }

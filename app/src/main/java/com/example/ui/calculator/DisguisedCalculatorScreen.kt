@@ -109,6 +109,7 @@ import com.example.viewmodel.XomeViewModel
 fun DisguisedCalculatorScreen(
     calcState: XomeViewModel.CalculatorUiState,
     needsOnboarding: Boolean,
+    showSetupDialog: Boolean,
     isProvisioningOnboarding: Boolean,
     onboardingError: String?,
     totalProvisionedSpaces: Int,
@@ -159,12 +160,59 @@ fun DisguisedCalculatorScreen(
                 onToggleDegRad = onToggleDegRad,
                 onToggleSciPad = onToggleSciPad,
                 onToggleHistory = onToggleHistory,
-                onOpenSetupIfEmpty = {
-                    if (totalProvisionedSpaces == 0) {
-                        onOpenOnboarding()
+                onOpenSetupIfEmpty = onOpenOnboarding
+            )
+
+            // Non-blocking First-Launch Vault Setup Banner when no .header exists yet
+            AnimatedVisibility(visible = needsOnboarding) {
+                Surface(
+                    color = VaultSurfaceElevated,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, VaultCyanPrimary.copy(alpha = 0.55f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .testTag("first_launch_banner")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "FIRST LAUNCH: TYPE 1314= TO UNLOCK",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = VaultCyanPrimary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Or tap Configure to set a custom Argon2id sequence",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontSize = 12.sp,
+                                color = CalcTextSecondary
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            onClick = onOpenOnboarding,
+                            color = VaultCyanPrimary,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.testTag("open_custom_setup_button")
+                        ) {
+                            Text(
+                                text = "Configure",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF001F26),
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
                     }
                 }
-            )
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -231,13 +279,13 @@ fun DisguisedCalculatorScreen(
             )
         }
 
-        // First-Launch Cryptographic Onboarding Modal (Only shown when spaces/*.header is empty)
-        if (needsOnboarding) {
+        // Optional Custom Sequence Setup Sheet (Opened when user taps INIT VAULT or Configure)
+        if (showSetupDialog) {
             ModalBottomSheet(
                 onDismissRequest = onDismissOnboarding,
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
                 containerColor = VaultSurface,
-                scrimColor = Color.Black.copy(alpha = 0.78f),
+                scrimColor = Color.Black.copy(alpha = 0.65f),
                 dragHandle = null
             ) {
                 FirstLaunchVaultSetupSheet(

@@ -10,6 +10,7 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -31,12 +32,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Module 6.1: Mandatory system-level screenshot, screen-recording & recents preview protection
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_SECURE,
-            WindowManager.LayoutParams.FLAG_SECURE
-        )
-
         // Module 6.2: Instant lifecycle lock on Home button, task switch, or screen-off
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStop(owner: LifecycleOwner) {
@@ -46,6 +41,25 @@ class MainActivity : ComponentActivity() {
 
         enableEdgeToEdge()
         setContent {
+            val activeSession by viewModel.activeSession.collectAsStateWithLifecycle()
+            val flagSecureEnabled by viewModel.flagSecureWindowEnabled.collectAsStateWithLifecycle()
+
+            // Dynamically apply FLAG_SECURE only when inside an unlocked Private Space AND enabled.
+            // On the AI Studio Streaming Emulator (VirtualDisplay/WebRTC stream), setting FLAG_SECURE
+            // causes Android's SurfaceFlinger to mask the window with a solid black surface, so
+            // XomeViewModel automatically defaults flagSecureEnabled=false on streaming emulators
+            // while enabling it by default on physical devices.
+            LaunchedEffect(activeSession, flagSecureEnabled) {
+                if (activeSession != null && flagSecureEnabled) {
+                    window.setFlags(
+                        WindowManager.LayoutParams.FLAG_SECURE,
+                        WindowManager.LayoutParams.FLAG_SECURE
+                    )
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                }
+            }
+
             MyApplicationTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -63,10 +77,13 @@ fun XomeRootHost(viewModel: XomeViewModel) {
     val activeSession by viewModel.activeSession.collectAsStateWithLifecycle()
     val calcState by viewModel.calcState.collectAsStateWithLifecycle()
     val needsOnboarding by viewModel.needsOnboarding.collectAsStateWithLifecycle()
+    val showSetupDialog by viewModel.showSetupDialog.collectAsStateWithLifecycle()
     val isProvisioningOnboarding by viewModel.isProvisioningOnboarding.collectAsStateWithLifecycle()
     val onboardingError by viewModel.onboardingError.collectAsStateWithLifecycle()
     val totalSpaces by viewModel.totalProvisionedSpaces.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
+    val securityReport by viewModel.environmentSecurityReport.collectAsStateWithLifecycle()
+    val flagSecureEnabled by viewModel.flagSecureWindowEnabled.collectAsStateWithLifecycle()
 
     val spaceMeta by viewModel.currentSpaceMeta.collectAsStateWithLifecycle()
     val folders by viewModel.currentFolders.collectAsStateWithLifecycle()
@@ -86,6 +103,7 @@ fun XomeRootHost(viewModel: XomeViewModel) {
             DisguisedCalculatorScreen(
                 calcState = calcState,
                 needsOnboarding = needsOnboarding,
+                showSetupDialog = showSetupDialog,
                 isProvisioningOnboarding = isProvisioningOnboarding,
                 onboardingError = onboardingError,
                 totalProvisionedSpaces = totalSpaces,
@@ -137,7 +155,10 @@ fun XomeRootHost(viewModel: XomeViewModel) {
                         totalPlainBytes = totalPlainBytes,
                         importProgress = importProgress,
                         statusBanner = statusBanner,
-                        securityReport = viewModel.environmentSecurityReport,
+                        securityReport = securityReport,
+                        flagSecureEnabled = flagSecureEnabled,
+                        isStreamingEmulator = viewModel.isStreamingEmulator,
+                        onToggleFlagSecure = viewModel::setFlagSecureWindowEnabled,
                         onNavigateToFolder = viewModel::navigateToFolder,
                         onNavigateUp = viewModel::navigateUpFolder,
                         onSearchQueryChange = viewModel::updateSearchQuery,
