@@ -38,32 +38,50 @@ class GraphStudioUiTest {
             }
         }
         compose.onNodeWithTag("graph_studio_root").assertIsDisplayed()
+        compose.onNodeWithTag("graph_formula_0").assertDoesNotExist()
+        compose.onNodeWithTag("graph_formula_panel_toggle").performClick()
         compose.onNodeWithTag("graph_formula_0").performTextClearance()
         compose.onNodeWithTag("graph_formula_0").performTextInput("sin(3*x)")
         compose.onNodeWithTag("graph_formula_0").assertTextContains("sin(3*x)")
         compose.onNodeWithTag("graph_mode_POLAR").performClick()
         compose.onNodeWithTag("graph_mode_VECTOR_FIELD").performClick()
         compose.onNodeWithTag("graph_mode_CARTESIAN").performClick()
+        compose.onNodeWithTag("graph_formula_panel_toggle").performClick()
         compose.onNodeWithTag("graph_formula_0").assertTextContains("sin(3*x)")
         compose.onNodeWithTag("graph_close").performClick()
         compose.onNodeWithText("Open graph").performClick()
+        compose.onNodeWithTag("graph_formula_panel_toggle").performClick()
         compose.onNodeWithTag("graph_formula_0").assertTextContains("sin(3*x)")
     }
 
     @Test fun waveformTabIsFunctionalAndKeepsMathFormulas() {
         compose.setContent { MyApplicationTheme { GraphStudioScreen(onClose = {}) } }
         compose.onNodeWithTag("graph_category_WAVE").performClick()
+        compose.onNodeWithTag("graph_formula_panel_toggle").performClick()
         compose.onNodeWithTag("graph_formula_0").assertTextContains("sin(", substring = true)
         compose.onNodeWithTag("graph_2d_canvas").assertExists()
         compose.onNodeWithTag("graph_category_2D").performClick()
         compose.onNodeWithTag("graph_category_WAVE").performClick()
+        compose.onNodeWithTag("graph_formula_panel_toggle").performClick()
         compose.onNodeWithTag("graph_formula_0").assertTextContains("sin(", substring = true)
+    }
+
+    @Test fun fullscreenHidesEditorAndRestoresItOnExit() {
+        compose.setContent {
+            MyApplicationTheme { GraphStudioScreen(onClose = {}) }
+        }
+        compose.onNodeWithTag("graph_formula_panel_toggle").assertExists()
+        compose.onNodeWithTag("graph_fullscreen").performClick()
+        compose.onNodeWithTag("graph_formula_panel_toggle").assertDoesNotExist()
+        compose.onNodeWithTag("graph_fullscreen").performClick()
+        compose.onNodeWithTag("graph_formula_panel_toggle").assertExists()
     }
 
     @Test fun invalidFormulaShowsInlineErrorAndCanBeRepaired() {
         compose.setContent {
             MyApplicationTheme { GraphStudioScreen(onClose = {}) }
         }
+        compose.onNodeWithTag("graph_formula_panel_toggle").performClick()
         compose.onNodeWithTag("graph_formula_0").performTextClearance()
         compose.onNodeWithTag("graph_formula_0").performTextInput("sin(")
         compose.onNodeWithTag("graph_formula_error", useUnmergedTree = true).assertIsDisplayed()

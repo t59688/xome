@@ -4,7 +4,8 @@ import android.content.Context
 import android.graphics.Paint
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -45,11 +47,8 @@ import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Waves
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -74,6 +73,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -83,6 +84,7 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -158,6 +160,7 @@ fun GraphStudioScreen(onClose: () -> Unit) {
         })
     }
     var showMathInsight by remember { mutableStateOf(false) }
+    var formulaExpanded by remember(mode) { mutableStateOf(false) }
 
     fun persist() {
         val edit = prefs.edit().putString("active_mode", mode.name)
@@ -170,10 +173,10 @@ fun GraphStudioScreen(onClose: () -> Unit) {
     }
 
     val exit = { persist(); onClose() }
-    BackHandler(onBack = exit)
     LaunchedEffect(mode) { prefs.edit().putString("active_mode", mode.name).apply() }
 
     var fullScreen by remember { mutableStateOf(false) }
+    BackHandler { if (fullScreen) fullScreen = false else exit() }
     var playing by remember { mutableStateOf(false) }
     var resetRequest by remember { mutableIntStateOf(0) }
 
@@ -190,6 +193,7 @@ fun GraphStudioScreen(onClose: () -> Unit) {
     var parameter by remember { mutableFloatStateOf(1f) }
 
     val draft = drafts[mode] ?: GraphPresets.first(mode).expressions
+    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val compiled = remember(mode, draft) {
         draft.expressions().take(mode.fieldCount).map {
             if (it.isBlank()) null else GraphExpression.compile(it).getOrNull()
@@ -204,7 +208,7 @@ fun GraphStudioScreen(onClose: () -> Unit) {
         }
     }
 
-    // Animation frame pump: 30-60 FPS cap
+    // Frame-paced animation (~40Hz cap; actual cadence depends on display refresh).
     LaunchedEffect(playing) {
         if (!playing) return@LaunchedEffect
         var previousFrame = 0L
@@ -236,86 +240,81 @@ fun GraphStudioScreen(onClose: () -> Unit) {
             .imePadding()
             .testTag("graph_studio_root")
     ) {
-        // Top Instrument Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 6.dp, end = 12.dp, top = 4.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = exit, modifier = Modifier.testTag("graph_close")) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = if (zh) "返回计算器" else "Back to calculator",
-                    tint = CalcTextPrimary
-                )
-            }
-            Column(modifier = Modifier.weight(1f)) {
+        if (!fullScreen) {
+            // One line for navigation; categories and graph modes are separate levels.
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .padding(start = 6.dp, end = 16.dp, top = 2.dp, bottom = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = exit, modifier = Modifier.testTag("graph_close")) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = if (zh) "返回计算器" else "Back to calculator",
+                        tint = CalcTextPrimary)
+                }
                 Text(
-                    text = if (zh) "图形工作台" else "Graph Studio",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = CalcTextPrimary
-                )
-                Text(
-                    text = if (zh) "函数 · 波形 · 空间" else "Functions · Waves · Space",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = CalcTextMuted
+                    if (zh) "图形工作台" else "Graph Studio",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = CalcTextPrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
                 )
             }
 
-
-        }
-
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp)) {
-            // 3-way Segmented Category Selector: 2D | WAVE | 3D
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = CalcDisplayBg,
-                border = androidx.compose.foundation.BorderStroke(1.dp, CalcDisplayBorder),
-                modifier = Modifier.fillMaxWidth().testTag("graph_category_switch")
+                modifier = Modifier.fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 2.dp)
+                    .testTag("graph_category_switch")
             ) {
                 Row(modifier = Modifier.padding(3.dp)) {
                     listOf(
-                        "2D" to if (zh) "2D曲线" else "2D Curve",
-                        "WAVE" to if (zh) "波形" else "Wave",
-                        "3D" to if (zh) "3D立体" else "3D Space"
+                        "2D" to (if (zh) "2D 曲线" else "2D Curves"),
+                        "WAVE" to (if (zh) "动态波形" else "Waves"),
+                        "3D" to (if (zh) "3D 空间" else "3D Space")
                     ).forEach { (cat, label) ->
-                        val isSelected = currentCategory == cat
+                        val active = currentCategory == cat
+                        val tabColor by animateColorAsState(
+                            targetValue = if (active) CalcAccentCopper else Color.Transparent,
+                            animationSpec = tween(160),
+                            label = "graph_category_$cat"
+                        )
                         Surface(
                             onClick = {
-                                if (currentCategory != cat) {
+                                if (!active) {
                                     currentCategory = cat
                                     mode = when (cat) {
-                                        "2D" -> GraphPresets.modes2D.first()
                                         "WAVE" -> GraphPresets.modesWave.first()
-                                        else -> GraphPresets.modes3D.first()
+                                        "3D" -> GraphPresets.modes3D.first()
+                                        else -> GraphPresets.modes2D.first()
                                     }
-                                    selectedPreset = GraphPresets.forMode(mode).firstOrNull()
+                                    selectedPreset = GraphPresets.forMode(mode).firstOrNull {
+                                        it.expressions == drafts[mode]
+                                    }
                                     playing = false
+                                    showMathInsight = false
                                 }
                             },
                             shape = RoundedCornerShape(9.dp),
-                            color = if (isSelected) CalcAccentCopper else Color.Transparent,
+                            color = tabColor,
                             modifier = Modifier.weight(1f).testTag("graph_category_" + cat)
                         ) {
                             Text(
-                                text = label,
-                                color = if (isSelected) CalcChassisBg else CalcTextSecondary,
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                label,
+                                color = if (active) CalcChassisBg else CalcTextSecondary,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                                style = MaterialTheme.typography.bodyMedium,
                                 modifier = Modifier.fillMaxWidth()
-                                    .padding(horizontal = 8.dp, vertical = 9.dp)
+                                    .padding(horizontal = 4.dp, vertical = 10.dp)
                             )
                         }
                     }
                 }
             }
-        }
 
-        if (!fullScreen) {
-            // Mode Sub-selector (e.g. Cartesian, Parametric, Polar, Vectors for 2D)
+            // Compact, horizontally scrollable secondary mode navigation.
             val subModes = when (currentCategory) {
                 "2D" -> GraphPresets.modes2D
                 "WAVE" -> GraphPresets.modesWave
@@ -323,11 +322,9 @@ fun GraphStudioScreen(onClose: () -> Unit) {
             }
             if (subModes.size > 1) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 14.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                        .padding(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     subModes.forEach { option ->
                         GraphChoice(
@@ -335,138 +332,14 @@ fun GraphStudioScreen(onClose: () -> Unit) {
                             selected = option == mode,
                             onClick = {
                                 mode = option
-                                selectedPreset = GraphPresets.forMode(mode).firstOrNull()
+                                selectedPreset = GraphPresets.forMode(mode).firstOrNull {
+                                    it.expressions == drafts[mode]
+                                }
+                                showMathInsight = false
                                 playing = false
                             },
                             tag = "graph_mode_" + option.name
                         )
-                    }
-                }
-            }
-
-            // Presets Horizontal Carousel
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 14.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Info insight toggle button
-                Surface(
-                    onClick = { showMathInsight = !showMathInsight },
-                    shape = RoundedCornerShape(10.dp),
-                    color = if (showMathInsight) CalcAccentCopper.copy(alpha = 0.2f) else CalcDisplayBg,
-                    border = androidx.compose.foundation.BorderStroke(
-                        1.dp,
-                        if (showMathInsight) CalcAccentCopper else CalcDisplayBorder
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Info,
-                            contentDescription = "Math Insight",
-                            tint = if (showMathInsight) CalcAccentCopper else CalcTextMuted,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Text(
-                            text = if (zh) "原理" else "Insight",
-                            color = if (showMathInsight) CalcAccentCopper else CalcTextSecondary,
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
-                }
-
-                GraphPresets.forMode(mode).forEachIndexed { idx, preset ->
-                    val isCurrent = selectedPreset?.nameEn == preset.nameEn
-                    Surface(
-                        onClick = {
-                            selectedPreset = preset
-                            drafts[mode] = preset.expressions
-                            parameter = preset.parameter
-                            time = 0f
-                            playing = preset.animate
-                        },
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isCurrent) CalcAccentCopper.copy(alpha = 0.15f) else CalcDisplayBg,
-                        border = androidx.compose.foundation.BorderStroke(
-                            1.dp,
-                            if (isCurrent) CalcAccentCopper.copy(alpha = 0.8f) else CalcDisplayBorder
-                        ),
-                        modifier = Modifier.testTag("graph_preset_" + idx)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            if (preset.animate) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(RoundedCornerShape(3.dp))
-                                        .background(mint)
-                                )
-                            }
-                            Text(
-                                text = if (zh) preset.nameZh else preset.nameEn,
-                                color = if (isCurrent) CalcAccentCopper else CalcTextSecondary,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Math Insight Banner (Collapsible)
-            AnimatedVisibility(
-                visible = showMathInsight && selectedPreset != null,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically()
-            ) {
-                selectedPreset?.let { p ->
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = VaultSurfaceElevated,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, VaultBorderSubtle),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 4.dp)
-                            .animateContentSize()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = if (zh) "【${p.mathTag}】${p.nameZh}" else "【${p.mathTag}】${p.nameEn}",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = CalcAccentCopper
-                                )
-                                Text(
-                                    text = p.formulaDisplay,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = JetBrainsMonoFamily,
-                                    color = mint
-                                )
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = if (zh) p.insightZh else p.insightEn,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = CalcTextSecondary,
-                                lineHeight = 18.sp
-                            )
-                        }
                     }
                 }
             }
@@ -485,7 +358,23 @@ fun GraphStudioScreen(onClose: () -> Unit) {
         ) {
             if (mode.threeD) {
                 val surface = remember(context) { GraphSurfaceView(context) }
-                DisposableEffect(surface) { onDispose { surface.onPause() } }
+                DisposableEffect(surface, lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        when (event) {
+                            Lifecycle.Event.ON_START -> surface.onResume()
+                            Lifecycle.Event.ON_STOP -> surface.onPause()
+                            else -> Unit
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                        surface.onResume()
+                    }
+                    onDispose {
+                        lifecycleOwner.lifecycle.removeObserver(observer)
+                        surface.onPause()
+                    }
+                }
                 LaunchedEffect(resetRequest) {
                     if (resetRequest > 0) surface.resetCamera()
                 }
@@ -528,7 +417,7 @@ fun GraphStudioScreen(onClose: () -> Unit) {
                     style = MaterialTheme.typography.labelMedium
                 )
                 Text(
-                    text = if (playing) "LIVE 60FPS" else "RAD",
+                    text = if (playing) "LIVE" else "RAD",
                     color = if (playing) mint else CalcTextMuted,
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = JetBrainsMonoFamily
@@ -554,7 +443,11 @@ fun GraphStudioScreen(onClose: () -> Unit) {
                 ) {
                     Icon(
                         if (fullScreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                        contentDescription = if (zh) "扩展画布" else "Expand plot",
+                        contentDescription = if (fullScreen) {
+                            if (zh) "退出全屏" else "Exit fullscreen"
+                        } else {
+                            if (zh) "扩展画布" else "Expand plot"
+                        },
                         tint = CalcTextSecondary
                     )
                 }
@@ -577,200 +470,378 @@ fun GraphStudioScreen(onClose: () -> Unit) {
             )
         }
 
-        // Formulas Input Panel (Collapsed in FullScreen)
         if (!fullScreen) {
+            // Bottom instrument dock: presets, editable equations, and full-width controls.
+            // The editor stays compact by default so the drawing remains the primary surface.
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 240.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                modifier = Modifier.fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 3.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                val labels = when (mode) {
-                    GraphMode.CARTESIAN -> listOf("y₁(x)", "y₂(x)", "y₃(x)")
-                    GraphMode.WAVEFORM -> listOf("波形₁(x,t)", "谐波/分量(x,t)", "包络/调制(x,t)")
-                    GraphMode.PARAMETRIC -> listOf("x(u)", "y(u)")
-                    GraphMode.POLAR -> listOf("r(θ)")
-                    GraphMode.VECTOR_FIELD -> listOf("P(x,y)", "Q(x,y)")
-                    GraphMode.SURFACE -> listOf("z(x,y)")
-                    GraphMode.SPACE_CURVE -> listOf("x(u)", "y(u)", "z(u)")
-                }
-                val count = if ((mode == GraphMode.CARTESIAN || mode == GraphMode.WAVEFORM) && draft.third.isBlank()) 2 else mode.fieldCount
-                for (idx in 0 until count) {
+                if (!keyboardVisible) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .testTag("graph_presets_strip"),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
-                            Modifier
-                                .size(8.dp)
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(plotColors[idx.coerceAtMost(2)])
+                        Text(
+                            if (zh) "预设" else "Presets",
+                            color = CalcTextMuted,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(end = 3.dp)
                         )
-                        OutlinedTextField(
-                            value = draft.expressions()[idx],
-                            onValueChange = { next ->
-                                playing = false
-                                val updated = draft.update(idx, next.take(192))
-                                drafts[mode] = updated
-                                selectedPreset = GraphPresets.forMode(mode).firstOrNull {
-                                    it.expressions == updated
-                                }
-                            },
-                            singleLine = true,
-                            isError = formulaErrors.getOrNull(idx) != null,
-                            supportingText = formulaErrors.getOrNull(idx)?.let { issue ->
-                                {
+                        GraphPresets.forMode(mode).forEachIndexed { idx, preset ->
+                            val active = selectedPreset?.nameEn == preset.nameEn
+                            Surface(
+                                onClick = {
+                                    selectedPreset = preset
+                                    drafts[mode] = preset.expressions
+                                    parameter = preset.parameter
+                                    time = 0f
+                                    playing = preset.animate
+                                },
+                                shape = RoundedCornerShape(9.dp),
+                                color = if (active) CalcAccentCopper.copy(alpha = .18f)
+                                    else CalcDisplayBg,
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp,
+                                    if (active) CalcAccentCopper.copy(alpha = .6f)
+                                    else CalcDisplayBorder
+                                ),
+                                modifier = Modifier.testTag("graph_preset_" + idx)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    if (preset.animate) {
+                                        Box(
+                                            modifier = Modifier.size(6.dp)
+                                                .clip(RoundedCornerShape(3.dp))
+                                                .background(mint)
+                                        )
+                                    }
                                     Text(
-                                        issue,
+                                        if (zh) preset.nameZh else preset.nameEn,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = Color(0xFFFF978F),
-                                        modifier = Modifier.testTag("graph_formula_error")
+                                        fontWeight = if (active) FontWeight.SemiBold
+                                            else FontWeight.Normal,
+                                        color = if (active) CalcAccentCopper else CalcTextSecondary
                                     )
                                 }
-                            },
-                            label = { Text(labels[idx], color = CalcTextMuted) },
-                            textStyle = androidx.compose.ui.text.TextStyle(
-                                fontFamily = JetBrainsMonoFamily,
-                                fontSize = 14.sp,
-                                color = CalcTextPrimary
-                            ),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = CalcAccentCopper,
-                                unfocusedBorderColor = CalcDisplayBorder,
-                                cursorColor = CalcAccentCopper
-                            ),
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("graph_formula_" + idx),
-                            shape = RoundedCornerShape(12.dp)
-                        )
+                            }
+                        }
                     }
                 }
-                if ((mode == GraphMode.CARTESIAN || mode == GraphMode.WAVEFORM) && draft.third.isBlank()) {
+
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = CalcDisplayBg,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, CalcDisplayBorder),
+                    modifier = Modifier.fillMaxWidth().testTag("graph_equation_dock")
+                ) {
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable { formulaExpanded = !formulaExpanded }
+                                .padding(horizontal = 13.dp, vertical = 11.dp)
+                                .semantics {
+                                    contentDescription = if (formulaExpanded) {
+                                        if (zh) "收起公式编辑" else "Collapse equation editor"
+                                    } else {
+                                        if (zh) "展开公式编辑" else "Expand equation editor"
+                                    }
+                                }
+                                .testTag("graph_formula_panel_toggle"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Box(
+                                Modifier.size(7.dp).clip(RoundedCornerShape(4.dp))
+                                    .background(plotColors.first())
+                            )
+                            Text(
+                                if (zh) "公式" else "Equations",
+                                color = CalcTextPrimary,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                if (formulaExpanded) {
+                                    if (zh) "编辑表达式" else "Edit expressions"
+                                } else draft.first.ifBlank {
+                                    if (zh) "点击输入表达式" else "Tap to enter an expression"
+                                },
+                                color = CalcTextSecondary,
+                                fontFamily = JetBrainsMonoFamily,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                if (formulaExpanded) (if (zh) "收起" else "Close")
+                                else (if (zh) "编辑" else "Edit"),
+                                color = CalcAccentCopper,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                            Icon(
+                                if (formulaExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                tint = CalcAccentCopper,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+                        AnimatedVisibility(
+                            visible = formulaExpanded,
+                            enter = fadeIn() + expandVertically(),
+                            exit = fadeOut() + shrinkVertically()
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth()
+                                    .heightIn(max = if (keyboardVisible) 220.dp else 275.dp)
+                                    .verticalScroll(rememberScrollState())
+                                    .padding(start = 13.dp, end = 13.dp, bottom = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                val labels = when (mode) {
+                                    GraphMode.CARTESIAN -> listOf("y₁(x)", "y₂(x)", "y₃(x)")
+                                    GraphMode.WAVEFORM -> listOf("波形₁(x,t)", "分量(x,t)", "包络(x,t)")
+                                    GraphMode.PARAMETRIC -> listOf("x(u)", "y(u)")
+                                    GraphMode.POLAR -> listOf("r(θ)")
+                                    GraphMode.VECTOR_FIELD -> listOf("P(x,y)", "Q(x,y)")
+                                    GraphMode.SURFACE -> listOf("z(x,y)")
+                                    GraphMode.SPACE_CURVE -> listOf("x(u)", "y(u)", "z(u)")
+                                }
+                                val count = if ((mode == GraphMode.CARTESIAN || mode == GraphMode.WAVEFORM)
+                                    && draft.third.isBlank()) 2 else mode.fieldCount
+                                for (idx in 0 until count) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(9.dp)
+                                    ) {
+                                        Box(
+                                            Modifier.size(8.dp).clip(RoundedCornerShape(4.dp))
+                                                .background(plotColors[idx.coerceAtMost(2)])
+                                        )
+                                        OutlinedTextField(
+                                            value = draft.expressions()[idx],
+                                            onValueChange = { next ->
+                                                playing = false
+                                                val updated = draft.update(idx, next.take(192))
+                                                drafts[mode] = updated
+                                                selectedPreset = GraphPresets.forMode(mode).firstOrNull {
+                                                    it.expressions == updated
+                                                }
+                                            },
+                                            singleLine = true,
+                                            isError = formulaErrors.getOrNull(idx) != null,
+                                            supportingText = formulaErrors.getOrNull(idx)?.let { issue ->
+                                                {
+                                                    Text(
+                                                        issue,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = Color(0xFFFF978F),
+                                                        modifier = Modifier.testTag("graph_formula_error")
+                                                    )
+                                                }
+                                            },
+                                            label = { Text(labels[idx], color = CalcTextMuted) },
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                fontFamily = JetBrainsMonoFamily,
+                                                fontSize = 14.sp,
+                                                color = CalcTextPrimary
+                                            ),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedBorderColor = CalcAccentCopper,
+                                                unfocusedBorderColor = CalcDisplayBorder,
+                                                cursorColor = CalcAccentCopper
+                                            ),
+                                            modifier = Modifier.weight(1f)
+                                                .testTag("graph_formula_" + idx),
+                                            shape = RoundedCornerShape(11.dp)
+                                        )
+                                    }
+                                }
+                                if ((mode == GraphMode.CARTESIAN || mode == GraphMode.WAVEFORM)
+                                    && draft.third.isBlank()) {
+                                    Surface(
+                                        onClick = {
+                                            drafts[mode] = draft.copy(third = "0.5*sin(3*x-t)")
+                                            selectedPreset = null
+                                        },
+                                        color = Color.Transparent,
+                                        modifier = Modifier.align(Alignment.End)
+                                            .testTag("graph_add_curve")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Default.Add, contentDescription = null,
+                                                tint = CalcAccentCopper, modifier = Modifier.size(17.dp))
+                                            Text(if (zh) "添加曲线" else "Add curve",
+                                                color = CalcAccentCopper,
+                                                style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                }
+                                selectedPreset?.let { preset ->
+                                    Surface(
+                                        onClick = { showMathInsight = !showMathInsight },
+                                        color = Color.Transparent,
+                                        modifier = Modifier.align(Alignment.End)
+                                            .testTag("graph_insight_toggle")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            Icon(Icons.Default.Info, contentDescription = null,
+                                                tint = CalcTextSecondary, modifier = Modifier.size(16.dp))
+                                            Text(if (zh) "数学原理" else "About this graph",
+                                                color = CalcTextSecondary,
+                                                style = MaterialTheme.typography.bodySmall)
+                                            Icon(
+                                                if (showMathInsight) Icons.Default.ExpandLess
+                                                else Icons.Default.ExpandMore,
+                                                contentDescription = null,
+                                                tint = CalcTextMuted, modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                    AnimatedVisibility(showMathInsight) {
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth()
+                                                .background(VaultSurfaceElevated,
+                                                    RoundedCornerShape(10.dp))
+                                                .padding(12.dp),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                if (zh) preset.nameZh else preset.nameEn,
+                                                color = CalcAccentCopper,
+                                                fontWeight = FontWeight.SemiBold,
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                            Text(
+                                                preset.formulaDisplay,
+                                                color = mint,
+                                                fontFamily = JetBrainsMonoFamily,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                            Text(
+                                                if (zh) preset.insightZh else preset.insightEn,
+                                                color = CalcTextSecondary,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!keyboardVisible) {
+                    // Transport is two full-width tracks: no compressed slider hit areas.
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Surface(
-                            onClick = {
-                                drafts[mode] = draft.copy(third = "0.5*sin(3*x-t)")
-                                selectedPreset = null
-                            },
-                            color = Color.Transparent,
-                            modifier = Modifier.testTag("graph_add_curve")
+                            onClick = { playing = !playing },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (playing) CalcAccentCopper else VaultSurfaceElevated,
+                            modifier = Modifier.size(53.dp).testTag("graph_play_toggle")
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(contentAlignment = Alignment.Center) {
                                 Icon(
-                                    Icons.Default.Add,
-                                    contentDescription = null,
-                                    tint = CalcAccentCopper,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = if (zh) "添加叠加曲线" else "Add component curve",
-                                    color = CalcAccentCopper,
-                                    style = MaterialTheme.typography.bodySmall
+                                    if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = if (zh)
+                                        (if (playing) "暂停" else "播放动画")
+                                    else (if (playing) "Pause" else "Play"),
+                                    tint = if (playing) CalcChassisBg else mint,
+                                    modifier = Modifier.size(26.dp)
                                 )
                             }
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            GraphParameterControl(
+                                symbol = "t", value = time, range = 0f..(2f * PI.toFloat()),
+                                color = CalcAccentCopper,
+                                description = if (zh) "时间" else "Time",
+                                tag = "graph_time_slider",
+                                onChange = { playing = false; time = it }
+                            )
+                            GraphParameterControl(
+                                symbol = "a", value = parameter, range = .2f..3.5f,
+                                color = lilac,
+                                description = if (zh) "幅值参数" else "Amplitude",
+                                tag = "graph_parameter_slider",
+                                onChange = { parameter = it }
+                            )
                         }
                     }
                 }
             }
         }
 
-        // Animated Transport Controls (Play / Time Slider / Parameter Slider)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Surface(
-                onClick = { playing = !playing },
-                shape = RoundedCornerShape(12.dp),
-                color = if (playing) CalcAccentCopper else Color(0xFF2A322F),
-                modifier = Modifier.testTag("graph_play_toggle")
-            ) {
-                Icon(
-                    imageVector = if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    contentDescription = if (zh) (if (playing) "暂停" else "播放动态波形") else (if (playing) "Pause" else "Play"),
-                    tint = if (playing) CalcChassisBg else mint,
-                    modifier = Modifier
-                        .padding(12.dp)
-                        .size(24.dp)
-                )
-            }
+    }
+}
 
-            // Time Slider (t)
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "t",
-                        color = CalcAccentCopper,
-                        fontFamily = JetBrainsMonoFamily,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        text = displayNumber(time.toDouble()),
-                        color = CalcTextSecondary,
-                        fontFamily = JetBrainsMonoFamily,
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
-                Slider(
-                    value = time,
-                    onValueChange = { playing = false; time = it },
-                    valueRange = 0f..(2 * PI.toFloat()),
-                    modifier = Modifier
-                        .height(30.dp)
-                        .semantics { contentDescription = if (zh) "时间 t" else "Time t" }
-                        .testTag("graph_time_slider"),
-                    colors = SliderDefaults.colors(
-                        thumbColor = CalcAccentCopper,
-                        activeTrackColor = CalcAccentCopper,
-                        inactiveTrackColor = grid
-                    )
-                )
-            }
-
-            // Parameter Slider (a)
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "a",
-                        color = lilac,
-                        fontFamily = JetBrainsMonoFamily,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        text = displayNumber(parameter.toDouble()),
-                        color = CalcTextSecondary,
-                        fontFamily = JetBrainsMonoFamily,
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                }
-                Slider(
-                    value = parameter,
-                    onValueChange = { parameter = it },
-                    valueRange = 0.2f..3.5f,
-                    modifier = Modifier
-                        .height(30.dp)
-                        .semantics { contentDescription = if (zh) "幅值参数 a" else "Amplitude parameter a" }
-                        .testTag("graph_parameter_slider"),
-                    colors = SliderDefaults.colors(
-                        thumbColor = lilac,
-                        activeTrackColor = lilac,
-                        inactiveTrackColor = grid
-                    )
-                )
-            }
-        }
+@Composable
+private fun GraphParameterControl(
+    symbol: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    color: Color,
+    description: String,
+    tag: String,
+    onChange: (Float) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().height(35.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Text(
+            symbol,
+            color = color,
+            fontFamily = JetBrainsMonoFamily,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.width(14.dp)
+        )
+        Slider(
+            value = value,
+            onValueChange = onChange,
+            valueRange = range,
+            modifier = Modifier.weight(1f)
+                .semantics { contentDescription = "$description $symbol" }
+                .testTag(tag),
+            colors = SliderDefaults.colors(
+                thumbColor = color,
+                activeTrackColor = color,
+                inactiveTrackColor = grid
+            )
+        )
+        Text(
+            displayNumber(value.toDouble()),
+            color = CalcTextSecondary,
+            fontFamily = JetBrainsMonoFamily,
+            style = MaterialTheme.typography.labelMedium,
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            modifier = Modifier.width(45.dp)
+        )
     }
 }
 
@@ -1105,6 +1176,14 @@ private fun GraphCanvas2D(
             if (mode == GraphMode.WAVEFORM && waveValidCount > 0 && waveMin.isFinite() && waveMax.isFinite()) {
                 val vpp = waveMax - waveMin
                 val vrms = sqrt(waveSumSq / waveValidCount)
+                // Instrument telemetry owns a quiet solid ground, so graph axes and
+                // tick labels cannot visually intersect with the live readout.
+                drawRoundRect(
+                    color = CalcDisplayBg.copy(alpha = .94f),
+                    topLeft = Offset(11.dp.toPx(), 27.dp.toPx()),
+                    size = Size(minOf(204.dp.toPx(), w - 22.dp.toPx()), 25.dp.toPx()),
+                    cornerRadius = CornerRadius(7.dp.toPx())
+                )
                 drawIntoCanvas { cv ->
                     val txt = "P-P = %.2f   RMS = %.2f".format(Locale.US, vpp, vrms)
                     cv.nativeCanvas.drawText(txt, 16.dp.toPx(), 44.dp.toPx(), scopePaint)
