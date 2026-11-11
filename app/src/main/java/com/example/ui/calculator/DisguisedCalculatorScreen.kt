@@ -42,6 +42,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Functions
+import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Restore
@@ -113,6 +114,7 @@ import com.example.ui.theme.VaultAccentPrimary
 import com.example.ui.theme.VaultEmeraldSuccess
 import com.example.ui.theme.VaultSurface
 import com.example.ui.theme.VaultSurfaceElevated
+import com.example.ui.graph.GraphStudioScreen
 import com.example.viewmodel.XomeViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -142,12 +144,18 @@ fun DisguisedCalculatorScreen(
     onOpenUpdates: () -> Unit = {}
 ) {
     val strings = LocalAppStrings.current
+    var graphStudioOpen by rememberSaveable { mutableStateOf(false) }
     val archiveRestoreLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             onImportSelfHealingArchive(uri)
         }
+    }
+
+    if (graphStudioOpen) {
+        GraphStudioScreen(onClose = { graphStudioOpen = false })
+        return
     }
 
     Box(
@@ -171,6 +179,7 @@ fun DisguisedCalculatorScreen(
                 isHistoryVisible = calcState.isHistoryVisible,
                 totalSpacesCount = totalProvisionedSpaces,
                 onToggleDegRad = onToggleDegRad,
+                onOpenGraph = { graphStudioOpen = true },
                 onToggleSciPad = onToggleSciPad,
                 onToggleHistory = onToggleHistory,
                 onToggleLanguage = onToggleLanguage,
@@ -318,6 +327,7 @@ private fun CalculatorTopToolbar(
     isHistoryVisible: Boolean,
     totalSpacesCount: Int,
     onToggleDegRad: () -> Unit,
+    onOpenGraph: () -> Unit,
     onToggleSciPad: () -> Unit,
     onToggleHistory: () -> Unit,
     onToggleLanguage: () -> Unit,
@@ -375,6 +385,16 @@ private fun CalculatorTopToolbar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            IconButton(
+                onClick = onOpenGraph,
+                modifier = Modifier.size(38.dp).clip(RoundedCornerShape(10.dp))
+                    .background(CalcOperatorKeyBg).testTag("calc_graph_button")
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ShowChart,
+                    contentDescription = if (strings.language == com.example.ui.i18n.AppLanguage.ZH)
+                        "图形工作台" else "Graph studio",
+                    tint = CalcAccentCopper, modifier = Modifier.size(19.dp))
+            }
             IconButton(
                 onClick = onOpenUpdates,
                 modifier = Modifier.size(38.dp).clip(RoundedCornerShape(10.dp))
