@@ -188,6 +188,9 @@ fun XomeRootHost(
     val showSetupDialog by viewModel.showSetupDialog.collectAsStateWithLifecycle()
     val isProvisioningOnboarding by viewModel.isProvisioningOnboarding.collectAsStateWithLifecycle()
     val onboardingError by viewModel.onboardingError.collectAsStateWithLifecycle()
+    val isRecoveringSpace by viewModel.isRecoveringSpace.collectAsStateWithLifecycle()
+    val recoveryError by viewModel.recoveryError.collectAsStateWithLifecycle()
+    val unsealedRecoverableSpaces by viewModel.unsealedRecoverableSpaces.collectAsStateWithLifecycle()
     val totalSpaces by viewModel.totalProvisionedSpaces.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
     val securityReport by viewModel.environmentSecurityReport.collectAsStateWithLifecycle()
@@ -221,6 +224,9 @@ fun XomeRootHost(
                     showSetupDialog = showSetupDialog,
                     isProvisioningOnboarding = isProvisioningOnboarding,
                     onboardingError = onboardingError,
+                    isRecoveringSpace = isRecoveringSpace,
+                    recoveryError = recoveryError,
+                    unsealedRecoverableSpaces = unsealedRecoverableSpaces,
                     totalProvisionedSpaces = totalSpaces,
                     statusBanner = statusBanner,
                     onInputToken = viewModel::onCalculatorInput,
@@ -233,6 +239,8 @@ fun XomeRootHost(
                     onClearHistory = viewModel::clearCalculatorHistory,
                     onToggleLanguage = viewModel::toggleAppLanguage,
                     onProvisionPrimarySpace = viewModel::provisionInitialPrimarySpace,
+                    onExtractKeyfileDigest = viewModel::extractKeyfileDigest,
+                    onRecoverSpaceWithKeyfile = viewModel::recoverExistingSpaceWithKeyfile,
                     onDismissOnboarding = viewModel::dismissOnboardingToCalculator,
                     onOpenOnboarding = viewModel::openOnboardingSetup,
                     onImportSelfHealingArchive = viewModel::importSelfHealingBundleFromUri,
@@ -300,8 +308,10 @@ fun XomeRootHost(
                             onShredFile = viewModel::shredVaultFile,
                             onRenameFile = viewModel::renameVaultFile,
                             onChangeSequence = viewModel::changeCurrentSpaceSequence,
+                            onRotateKeyfile = viewModel::rotateCurrentSpaceKeyfile,
                             onVerifyCurrentSequence = viewModel::verifyCurrentSpaceSequence,
                             onCreateDecoySpace = viewModel::createIndependentDecoySpace,
+                            onExtractKeyfileDigest = viewModel::extractKeyfileDigest,
                             onExportSelfHealingArchive = viewModel::exportSelfHealingBundleToUri,
                             onImportSelfHealingArchive = viewModel::importSelfHealingBundleFromUri,
                             onLockVault = viewModel::lockVaultImmediately,

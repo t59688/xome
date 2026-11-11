@@ -36,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AddModerator
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -45,6 +46,10 @@ import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import com.example.viewmodel.XomeViewModel
+import kotlinx.coroutines.launch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -148,13 +153,22 @@ internal fun VaultWizardEntry(
 @Composable
 internal fun CreateIndependentSpaceWizard(
     initialAlias: String,
-    onCreate: (String, String, String, Boolean, Boolean, Boolean, (Boolean, String) -> Unit) -> Unit,
-    onClose: () -> Unit
+    onExtractKeyfileDigest: suspend (android.net.Uri) -> Result<XomeViewModel.KeyfileSelection> = {
+        Result.failure(IllegalStateException("Not configured"))
+    },
+    onLaunchKeyfilePicker: ((android.net.Uri?) -> Unit) -> Unit = { it(null) },
+    onCreate: (String, String, ByteArray?, String, Boolean, Boolean, Boolean, (Boolean, String) -> Unit) -> Unit,
+    onClose: () -> Unit,
+    initialKeyfile: XomeViewModel.KeyfileSelection? = null
 ) {
     val zh = LocalAppStrings.current.language == AppLanguage.ZH
     val accent = VaultPurpleDecoy
+    val scope = rememberCoroutineScope()
     var step by remember { mutableIntStateOf(0) }
     var alias by remember { mutableStateOf(initialAlias) }
+    var selectedKeyfile by remember { mutableStateOf(initialKeyfile) }
+    var isHashingKeyfile by remember { mutableStateOf(false) }
+    var keyfileError by remember { mutableStateOf<String?>(null) }
     var sequence by remember { mutableStateOf("") }
     var confirmation by remember { mutableStateOf("") }
     val seedFiles = remember { mutableStateOf(true) }
@@ -164,18 +178,26 @@ internal fun CreateIndependentSpaceWizard(
     var success by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
+    DisposableEffect(Unit) {
+        onDispose { selectedKeyfile?.wipe() }
+    }
+
     val canContinue = when (step) {
         0 -> VaultWizardRules.validAlias(alias)
-        1 -> VaultWizardRules.confirmedSequence(sequence, confirmation)
+        1 -> selectedKeyfile != null && !isHashingKeyfile
+        2 -> VaultWizardRules.confirmedSequence(sequence, confirmation)
         else -> true
     }
 
     WizardFrame(
         title = tr(zh, "新建独立空间", "Create independent space"),
-        subtitle = tr(zh, "不同空间，独立凭据与数据。", "Independent credentials and data for each space."),
+        subtitle = tr(zh, "不同空间，独立钥匙文件、凭据与数据。", "Isolated Keyfile, credentials, and data for each space."),
         steps = listOf(
-            tr(zh, "名称", "Name"), tr(zh, "解锁序列", "Sequence"),
-            tr(zh, "选项", "Options"), tr(zh, "创建", "Create")
+            tr(zh, "名称", "Name"),
+            tr(zh, "钥匙文件", "Keyfile"),
+            tr(zh, "序列", "Sequence"),
+            tr(zh, "选项", "Options"),
+            tr(zh, "创建", "Create")
         ),
         step = step,
         accent = accent,
@@ -184,7 +206,7 @@ internal fun CreateIndependentSpaceWizard(
         enabled = (success || canContinue) && !processing,
         primaryLabel = when {
             success -> tr(zh, "完成", "Done")
-            step == 3 -> tr(zh, "创建空间", "Create space")
+            step == 4 -> tr(zh, "创建空间", "Create space")
             else -> tr(zh, "继续", "Continue")
         },
         onBack = {
@@ -199,19 +221,21 @@ internal fun CreateIndependentSpaceWizard(
             error = null
             if (success) {
                 onClose()
-            } else if (step < 3) {
+            } else if (step < 4) {
                 if (canContinue) step++
             } else {
                 processing = true
                 onCreate(
-                    sequence.trim(), confirmation.trim(), alias.trim(),
-                    decoySpace.value, seedFiles.value, enterNow.value
+                    sequence.trim(), confirmation.trim(), selectedKeyfile?.pepper,
+                    alias.trim(), decoySpace.value, seedFiles.value, enterNow.value
                 ) { ok, msg ->
                     processing = false
                     if (ok) {
                         success = true
                         sequence = ""
                         confirmation = ""
+                        selectedKeyfile?.wipe()
+                        selectedKeyfile = null
                     } else {
                         error = msg
                     }
@@ -261,6 +285,45 @@ internal fun CreateIndependentSpaceWizard(
                 )
             }
             1 -> WizardSection(
+                icon = Icons.Default.AttachFile,
+                title = tr(zh, "绑定实体钥匙文件", "Bind a Keyfile"),
+                description = tr(zh,
+                    "可选用与主空间完全不同的原文件。即使次级空间钥匙暴露，主空间依然完全无法解开。",
+                    "You can bind a completely different file from your primary space for full cryptographic isolation."),
+                accent = accent
+            ) {
+                KeyfilePickerCard(
+                    selectedKeyfile = selectedKeyfile,
+                    isHashing = isHashingKeyfile,
+                    errorText = keyfileError,
+                    accent = accent,
+                    title = tr(zh, "选择此空间的原文件", "Select space Keyfile"),
+                    subtitle = tr(zh, "点击选择任意非空原文件", "Tap to choose any non-empty file"),
+                    tipText = tr(zh,
+                        "仅在内存中提取 256-bit 摘要并封印在本机安全芯片中；绝不记录文件名与特征。",
+                        "Extracts a 256-bit digest in RAM and seals it locally; filename and size are never saved."),
+                    onRequestPickFile = {
+                        onLaunchKeyfilePicker { uri ->
+                            if (uri != null) {
+                                isHashingKeyfile = true
+                                keyfileError = null
+                                scope.launch {
+                                    val result = onExtractKeyfileDigest(uri)
+                                    isHashingKeyfile = false
+                                    result.onSuccess { sel ->
+                                        selectedKeyfile?.wipe()
+                                        selectedKeyfile = sel
+                                    }.onFailure { err ->
+                                        keyfileError = err.message
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    tagPrefix = "create_space_keyfile"
+                )
+            }
+            2 -> WizardSection(
                 icon = Icons.Default.Key,
                 title = tr(zh, "设置解锁序列", "Set the unlock sequence"),
                 description = tr(zh,
@@ -276,7 +339,7 @@ internal fun CreateIndependentSpaceWizard(
                     "create_space_confirmation", secret = true)
                 WizardValidationHint(
                     good = VaultWizardRules.validSequence(sequence),
-                    text = tr(zh, "6–16 个字符，必须同时包含数字与计算器符号", "6–16 characters combining digits and calculator symbols"),
+                    text = tr(zh, "6–64 个字符，必须同时包含数字与计算器符号", "6–64 characters combining digits and calculator symbols"),
                     accent = accent
                 )
                 if (confirmation.isNotEmpty()) {
@@ -288,7 +351,7 @@ internal fun CreateIndependentSpaceWizard(
                     )
                 }
             }
-            2 -> WizardSection(
+            3 -> WizardSection(
                 icon = Icons.Default.AddModerator,
                 title = tr(zh, "个性化新空间", "Space options"),
                 description = tr(zh, "可按用途选择，所有选项都能独立决定。",
@@ -319,12 +382,14 @@ internal fun CreateIndependentSpaceWizard(
                 title = if (success) tr(zh, "新空间已创建", "Space is ready")
                         else tr(zh, "确认创建", "Review before creating"),
                 description = if (success) tr(zh,
-                    "数据已独立保存。下次使用设置的解锁序列进入。",
-                    "Your space is ready. Use its sequence to unlock next time.")
-                else tr(zh, "确认名称与选项后再创建。", "Review the options before creating."),
+                    "数据已独立保存。日常只需在计算器输入解锁序列即可进入。",
+                    "Your space is ready. Enter its sequence on the calculator to unlock.")
+                else tr(zh, "确认名称、钥匙文件与选项后再创建。", "Review the options before creating."),
                 accent = if (success) VaultEmeraldSuccess else accent
             ) {
                 WizardSummaryRow(tr(zh, "空间名称", "Name"), alias)
+                WizardSummaryRow(tr(zh, "钥匙文件", "Keyfile"),
+                    tr(zh, "已提取 256-bit 零指纹摘要", "256-bit zero-fingerprint digest"))
                 WizardSummaryRow(tr(zh, "解锁序列", "Sequence"),
                     tr(zh, "已设置 · 内容隐藏", "Configured · hidden"))
                 WizardSummaryRow(tr(zh, "访客模式", "Guest mode"),
@@ -357,7 +422,7 @@ internal fun ChangeUnlockSequenceWizard(
     var error by remember { mutableStateOf<String?>(null) }
 
     val canContinue = when (step) {
-        0 -> VaultWizardRules.validCurrentSequence(current)
+        0 -> VaultWizardRules.validUnlockSequence(current)
         1 -> VaultWizardRules.changedSequence(current, next, confirmation)
         else -> true
     }
@@ -437,8 +502,8 @@ internal fun ChangeUnlockSequenceWizard(
                     accent, "change_sequence_current", secret = true
                 )
                 WizardValidationHint(
-                    good = VaultWizardRules.validCurrentSequence(current),
-                    text = tr(zh, "输入已有密码，兼容旧版序列", "Enter your existing sequence, including legacy credentials"), accent = accent
+                    good = VaultWizardRules.validUnlockSequence(current),
+                    text = tr(zh, "输入当前 6–64 位解锁序列", "Enter your current 6–64 char sequence"), accent = accent
                 )
             }
             1 -> WizardSection(
@@ -460,8 +525,8 @@ internal fun ChangeUnlockSequenceWizard(
                 )
                 WizardValidationHint(
                     good = VaultWizardRules.validSequence(next) && next.trim() != current.trim(),
-                    text = tr(zh, "6–16 个字符，包含数字与符号，且不同于旧序列",
-                        "6–16 characters with digits and symbols, different from the current sequence"),
+                    text = tr(zh, "6–64 个字符，包含数字与符号，且不同于旧序列",
+                        "6–64 characters with digits and symbols, different from the current sequence"),
                     accent = accent
                 )
                 if (confirmation.isNotEmpty()) {
@@ -489,6 +554,180 @@ internal fun ChangeUnlockSequenceWizard(
                     tr(zh, "已确认 · 内容隐藏", "Confirmed · hidden"))
                 WizardSummaryRow(tr(zh, "已有文件", "Stored files"),
                     tr(zh, "无需重新加密", "No re-encryption"))
+            }
+        }
+    }
+}
+
+@Composable
+internal fun RotateKeyfileWizard(
+    onVerify: (String, (Boolean) -> Unit) -> Unit,
+    onExtractKeyfileDigest: suspend (android.net.Uri) -> Result<XomeViewModel.KeyfileSelection> = {
+        Result.failure(IllegalStateException("Not configured"))
+    },
+    onLaunchKeyfilePicker: ((android.net.Uri?) -> Unit) -> Unit = { it(null) },
+    onRotateKeyfile: (String, ByteArray?, (Boolean, String) -> Unit) -> Unit,
+    onClose: () -> Unit,
+    initialKeyfile: XomeViewModel.KeyfileSelection? = null
+) {
+    val zh = LocalAppStrings.current.language == AppLanguage.ZH
+    val accent = VaultEmeraldSuccess
+    val scope = rememberCoroutineScope()
+    var step by remember { mutableIntStateOf(0) }
+    var current by remember { mutableStateOf("") }
+    var verified by remember { mutableStateOf(false) }
+    var newKeyfile by remember { mutableStateOf(initialKeyfile) }
+    var isHashingKeyfile by remember { mutableStateOf(false) }
+    var keyfileError by remember { mutableStateOf<String?>(null) }
+    var processing by remember { mutableStateOf(false) }
+    var success by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose { newKeyfile?.wipe() }
+    }
+
+    val canContinue = when (step) {
+        0 -> VaultWizardRules.validUnlockSequence(current)
+        1 -> newKeyfile != null && !isHashingKeyfile
+        else -> true
+    }
+
+    WizardFrame(
+        title = tr(zh, "更换钥匙文件", "Rotate Keyfile"),
+        subtitle = tr(zh, "重绑新的实体原文件，已有密文无需重新加密。",
+            "Bind a new original Keyfile without re-encrypting stored files."),
+        steps = listOf(
+            tr(zh, "验证", "Verify"),
+            tr(zh, "新钥匙", "Keyfile"),
+            tr(zh, "完成", "Finish")
+        ),
+        step = step,
+        accent = accent,
+        processing = processing,
+        completed = success,
+        enabled = (success || canContinue) && !processing,
+        primaryLabel = when {
+            success -> tr(zh, "完成", "Done")
+            step == 0 -> tr(zh, "验证并继续", "Verify and continue")
+            step == 1 -> tr(zh, "继续", "Continue")
+            else -> tr(zh, "立即更换", "Rotate Keyfile")
+        },
+        onBack = {
+            if (success) onClose()
+            else if (step > 0) { error = null; step-- }
+            else onClose()
+        },
+        onClose = onClose,
+        onPrimary = {
+            error = null
+            when {
+                success -> onClose()
+                step == 0 && verified -> step = 1
+                step == 0 -> {
+                    processing = true
+                    val verifiedValue = current
+                    onVerify(verifiedValue) { valid ->
+                        processing = false
+                        if (current != verifiedValue) return@onVerify
+                        if (valid) { verified = true; step = 1 }
+                        else error = tr(zh, "当前解锁序列不正确", "Current sequence is incorrect")
+                    }
+                }
+                step == 1 -> if (canContinue) step = 2
+                else -> {
+                    processing = true
+                    onRotateKeyfile(current, newKeyfile?.pepper) { ok, msg ->
+                        processing = false
+                        if (ok) {
+                            success = true
+                            current = ""
+                            newKeyfile?.wipe()
+                            newKeyfile = null
+                        } else {
+                            error = msg
+                        }
+                    }
+                }
+            }
+        },
+        error = error,
+        tag = "rotate_keyfile_wizard"
+    ) { page ->
+        when (page) {
+            0 -> WizardSection(
+                icon = Icons.Default.LockReset,
+                title = tr(zh, "验证当前序列", "Verify current sequence"),
+                description = tr(zh, "更换钥匙文件前，请先确认你拥有当前空间访问权限。",
+                    "Confirm you can unlock this space before changing its Keyfile."),
+                accent = accent
+            ) {
+                WizardField(
+                    current,
+                    { current = it; verified = false; error = null },
+                    tr(zh, "当前解锁序列", "Current sequence"),
+                    accent, "rotate_keyfile_current", secret = true
+                )
+                WizardValidationHint(
+                    good = VaultWizardRules.validUnlockSequence(current),
+                    text = tr(zh, "输入当前 6–64 位解锁序列", "Enter your current 6–64 char sequence"),
+                    accent = accent
+                )
+            }
+            1 -> WizardSection(
+                icon = Icons.Default.AttachFile,
+                title = tr(zh, "选择新的原文件", "Select new Keyfile"),
+                description = tr(zh,
+                    "替换后，旧钥匙文件将立刻失效；请妥善保管新原文件的副本用于换机恢复。",
+                    "The previous Keyfile becomes invalid immediately. Keep a backup of the new original file."),
+                accent = accent
+            ) {
+                KeyfilePickerCard(
+                    selectedKeyfile = newKeyfile,
+                    isHashing = isHashingKeyfile,
+                    errorText = keyfileError,
+                    accent = accent,
+                    title = tr(zh, "新实体钥匙文件（Keyfile）", "New original Keyfile"),
+                    subtitle = tr(zh, "点击选择任意非空原文件", "Tap to choose any non-empty file"),
+                    tipText = tr(zh,
+                        "推荐选用 PDF、压缩包、安装包或无损音频等不易被相册或聊天软件压缩的稳定文件。",
+                        "Prefer PDF, archive, APK, or audio files that will not be re-encoded."),
+                    onRequestPickFile = {
+                        onLaunchKeyfilePicker { uri ->
+                            if (uri != null) {
+                                isHashingKeyfile = true
+                                keyfileError = null
+                                scope.launch {
+                                    val result = onExtractKeyfileDigest(uri)
+                                    isHashingKeyfile = false
+                                    result.onSuccess { sel ->
+                                        newKeyfile?.wipe()
+                                        newKeyfile = sel
+                                    }.onFailure { err ->
+                                        keyfileError = err.message
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    tagPrefix = "rotate_keyfile"
+                )
+            }
+            else -> WizardSection(
+                icon = Icons.Default.CheckCircle,
+                title = if (success) tr(zh, "钥匙文件已更换", "Keyfile rotated")
+                        else tr(zh, "确认更换", "Confirm rotation"),
+                description = if (success) tr(zh,
+                    "已重生成隐形槽位容器并封印至本机，已有加密文件未受任何改动。",
+                    "Stealth container regenerated and sealed locally. Existing files remain untouched.")
+                else tr(zh,
+                    "将只重生成 8,208 B 隐形空间容器，立即切换为新钥匙文件。",
+                    "Only the 8,208 B stealth container will be regenerated."),
+                accent = if (success) VaultEmeraldSuccess else accent
+            ) {
+                WizardSummaryRow(tr(zh, "当前序列", "Sequence"), tr(zh, "已验证 · 保持不变", "Verified · unchanged"))
+                WizardSummaryRow(tr(zh, "新钥匙文件", "New Keyfile"), tr(zh, "已提取 256-bit 零指纹摘要", "256-bit zero-fingerprint digest"))
+                WizardSummaryRow(tr(zh, "已有密文", "Stored files"), tr(zh, "零重加密保留", "No re-encryption"))
             }
         }
     }

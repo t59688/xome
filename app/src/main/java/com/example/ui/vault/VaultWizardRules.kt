@@ -11,16 +11,16 @@ internal object VaultWizardRules {
         return alias.length in 1..MAX_ALIAS_LENGTH && alias.none(Char::isISOControl)
     }
 
-    fun validSequence(value: String): Boolean {
-        return VaultSequencePolicy.isValidNewSequence(value)
-    }
+    fun validSequence(value: String): Boolean = VaultSequencePolicy.isValidNewSequence(value)
 
-    fun validCurrentSequence(value: String): Boolean = VaultSequencePolicy.isValidLegacySequence(value)
+    fun validUnlockSequence(value: String): Boolean = VaultSequencePolicy.isValidUnlockCandidate(value)
 
     fun confirmedSequence(value: String, confirmation: String): Boolean =
-        validSequence(value) && VaultSequencePolicy.normalize(value) == VaultSequencePolicy.normalize(confirmation)
+        validSequence(value) &&
+            VaultSequencePolicy.normalize(value) == VaultSequencePolicy.normalize(confirmation)
 
     fun changedSequence(current: String, next: String, confirmation: String): Boolean =
-        validCurrentSequence(current) && confirmedSequence(next, confirmation) &&
+        validUnlockSequence(current) &&
+            confirmedSequence(next, confirmation) &&
             VaultSequencePolicy.normalize(current) != VaultSequencePolicy.normalize(next)
 }

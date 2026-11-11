@@ -15,7 +15,9 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.example.R
+import com.example.crypto.LocalPepperVault
 import com.example.crypto.VaultCryptoEngine
+import com.example.crypto.VaultSequencePolicy
 import com.example.crypto.VaultSessionManager
 import com.example.data.VaultDatabase
 import com.example.data.VaultFileEntity
@@ -126,28 +128,33 @@ object VaultStorageManager {
         )
     }
 
-    fun listSpaceHeaderFiles(context: Context): List<File> {
+    fun listSpaceContainerFiles(context: Context): List<File> {
         val tree = resolveVaultTree(context)
         return tree.spacesDir
             .listFiles { file ->
                 file.isFile &&
-                    file.extension.lowercase() == "header" &&
-                    file.length() == VaultCryptoEngine.HEADER_SIZE_BYTES.toLong()
+                    file.extension.lowercase() == "dat" &&
+                    file.length() == VaultCryptoEngine.CONTAINER_SIZE_BYTES.toLong()
             }
             ?.sortedBy { it.name }
             ?: emptyList()
     }
 
-    fun hasExistingSpaces(context: Context): Boolean {
-        return listSpaceHeaderFiles(context).isNotEmpty()
-    }
+    fun listSealedSpaceContainerFiles(context: Context): List<File> =
+        listSpaceContainerFiles(context).filter { LocalPepperVault.hasSeal(context, it.nameWithoutExtension) }
+
+    fun countUnsealedSpaceContainers(context: Context): Int =
+        listSpaceContainerFiles(context).count { !LocalPepperVault.hasSeal(context, it.nameWithoutExtension) }
+
+    fun hasReadyLocalSpaces(context: Context): Boolean =
+        listSealedSpaceContainerFiles(context).isNotEmpty()
 
     private fun generateRandomSpaceId(spacesDir: File): String {
         while (true) {
             val bytes = ByteArray(4)
             secureRandom.nextBytes(bytes)
             val hex = bytes.joinToString("") { "%02x".format(it) }
-            if (!File(spacesDir, "$hex.header").exists()) {
+            if (!File(spacesDir, "$hex.dat").exists()) {
                 return hex
             }
         }
@@ -156,33 +163,43 @@ object VaultStorageManager {
     suspend fun provisionNewSpace(
         context: Context,
         pinChars: CharArray,
+        filePepper: ByteArray,
         spaceAlias: String,
         isDecoy: Boolean,
         seedSampleFiles: Boolean = true,
-        activateImmediately: Boolean = true
+        activateImmediately: Boolean = true,
+        profile: VaultCryptoEngine.Argon2Profile = VaultCryptoEngine.Argon2Profile.selectForDevice()
     ): VaultSessionManager.ActiveVaultSession = withContext(Dispatchers.IO) {
-        require(com.example.crypto.VaultSequencePolicy.isValidNewSequence(java.nio.CharBuffer.wrap(pinChars))) {
+        require(VaultSequencePolicy.isValidNewSequence(java.nio.CharBuffer.wrap(pinChars))) {
             "Invalid new vault sequence"
+        }
+        require(filePepper.size == VaultCryptoEngine.KEYFILE_PEPPER_BYTES) {
+            "Invalid Keyfile pepper"
         }
         val tree = resolveVaultTree(context)
         val spaceId = generateRandomSpaceId(tree.spacesDir)
-        val headerFile = File(tree.spacesDir, "$spaceId.header")
+        val containerFile = File(tree.spacesDir, "$spaceId.dat")
         val dbFile = File(tree.dbDir, "$spaceId.db")
 
         val masterKey = VaultCryptoEngine.randomBytes(32)
         try {
-            val headerBytes = VaultCryptoEngine.createSpaceHeaderBytes(
+            val containerBytes = VaultCryptoEngine.createStealthContainerBytes(
                 pinChars = pinChars,
-                masterKey = masterKey
+                filePepper = filePepper,
+                masterKey = masterKey,
+                params = profile.toParams()
             )
-            FileOutputStream(headerFile).use { fos ->
-                fos.write(headerBytes)
-                fos.flush()
-                fos.fd.sync()
+            VaultCryptoEngine.writeAtomically(containerFile, containerBytes)
+
+            try {
+                LocalPepperVault.saveSeal(context, spaceId, profile, filePepper)
+            } catch (e: Exception) {
+                containerFile.delete()
+                throw e
             }
 
-            val headerInfo = VaultCryptoEngine.parseSpaceHeader(headerFile)
-                ?: throw IllegalStateException("Failed to verify newly created 128-byte .header")
+            val containerInfo = VaultCryptoEngine.parseStealthContainer(containerFile)
+                ?: throw IllegalStateException("Failed to verify newly created stealth container")
 
             val db = VaultDatabase.openSpaceDatabase(context, dbFile, masterKey)
             val dao = db.vaultDao()
@@ -223,14 +240,16 @@ object VaultStorageManager {
                     photosFolderId = photosFolderId,
                     docsFolderId = docsFolderId,
                     spaceId = spaceId,
-                    isDecoy = isDecoy
+                    isDecoy = isDecoy,
+                    profile = profile
                 )
             }
 
             val session = VaultSessionManager.ActiveVaultSession(
                 spaceId = spaceId,
-                headerFile = headerFile,
-                headerInfo = headerInfo,
+                containerFile = containerFile,
+                containerInfo = containerInfo,
+                kdfProfile = profile,
                 rawMasterKey = masterKey.copyOf(),
                 database = db
             )
@@ -252,52 +271,37 @@ object VaultStorageManager {
         canActivate: () -> Boolean = { true }
     ): VaultSessionManager.ActiveVaultSession? = withContext(Dispatchers.Default) {
         val trimmed = rawSequence.trim()
-        if (trimmed.length !in 4..16) return@withContext null
+        if (!VaultSequencePolicy.isValidUnlockCandidate(trimmed)) return@withContext null
 
         val pinChars = trimmed.toCharArray()
         try {
             val tree = resolveVaultTree(context)
-            val headerFiles = listSpaceHeaderFiles(context)
-            for (headerFile in headerFiles) {
+            val containerFiles = listSealedSpaceContainerFiles(context)
+            for (containerFile in containerFiles) {
                 currentCoroutineContext().ensureActive()
                 if (!canActivate()) return@withContext null
-                val info = VaultCryptoEngine.parseSpaceHeader(headerFile) ?: continue
-                val unlockedMk = VaultCryptoEngine.tryUnlockSpaceHeader(info, pinChars) ?: continue
-                var db: VaultDatabase? = null
-                var activated = false
-                try {
-                    currentCoroutineContext().ensureActive()
-                    if (!canActivate()) return@withContext null
-                    val dbFile = File(tree.dbDir, "${info.spaceId}.db")
-                    db = VaultDatabase.openSpaceDatabase(context, dbFile, unlockedMk)
-                    val dao = db.vaultDao()
-                    if (dao.getSpaceMetaSync() == null) {
-                        dao.upsertSpaceMeta(
-                            VaultSpaceMetaEntity(
-                                spaceId = info.spaceId,
-                                spaceAlias = "私密空间 (${info.spaceId.take(4)})",
-                                isDecoy = false
-                            )
-                        )
-                    }
-                    currentCoroutineContext().ensureActive()
-                    if (!canActivate()) return@withContext null
-                    val session = VaultSessionManager.ActiveVaultSession(
-                        spaceId = info.spaceId,
-                        headerFile = headerFile,
-                        headerInfo = info,
-                        rawMasterKey = unlockedMk,
-                        database = db
+                val info = VaultCryptoEngine.parseStealthContainer(containerFile) ?: continue
+                val sealed = LocalPepperVault.loadSeal(context, info.spaceId) ?: continue
+                val unlockedMk = try {
+                    VaultCryptoEngine.tryUnlockStealthContainer(
+                        containerInfo = info,
+                        pinChars = pinChars,
+                        filePepper = sealed.filePepper,
+                        params = sealed.profile.toParams()
                     )
-                    VaultSessionManager.activateSession(session)
-                    activated = true
-                    return@withContext session
                 } finally {
-                    if (!activated) {
-                        runCatching { db?.close() }
-                        Arrays.fill(unlockedMk, 0.toByte())
-                    }
-                }
+                    sealed.wipe()
+                } ?: continue
+
+                val session = activateUnlockedSession(
+                    context = context,
+                    tree = tree,
+                    info = info,
+                    profile = sealed.profile,
+                    unlockedMk = unlockedMk,
+                    canActivate = canActivate
+                )
+                if (session != null) return@withContext session
             }
             null
         } finally {
@@ -305,13 +309,195 @@ object VaultStorageManager {
         }
     }
 
+    /**
+     * Reinstall / New-Device Recovery: probes unsealed or all stealth containers using the
+     * user-selected Keyfile pepper + unlock sequence, and seals the Keyfile pepper locally
+     * into AndroidKeyStore upon success so future unlocks only need the sequence.
+     */
+    suspend fun recoverSpaceWithKeyfile(
+        context: Context,
+        rawSequence: String,
+        filePepper: ByteArray,
+        canActivate: () -> Boolean = { true }
+    ): VaultSessionManager.ActiveVaultSession? = withContext(Dispatchers.Default) {
+        val trimmed = rawSequence.trim()
+        if (!VaultSequencePolicy.isValidUnlockCandidate(trimmed)) return@withContext null
+        if (filePepper.size != VaultCryptoEngine.KEYFILE_PEPPER_BYTES) return@withContext null
+
+        val pinChars = trimmed.toCharArray()
+        try {
+            val tree = resolveVaultTree(context)
+            val containerFiles = listSpaceContainerFiles(context)
+            for (containerFile in containerFiles) {
+                currentCoroutineContext().ensureActive()
+                if (!canActivate()) return@withContext null
+                val info = VaultCryptoEngine.parseStealthContainer(containerFile) ?: continue
+                val (unlockedMk, matchedProfile) = VaultCryptoEngine.tryRecoverStealthContainer(
+                    containerInfo = info,
+                    pinChars = pinChars,
+                    filePepper = filePepper
+                ) ?: continue
+
+                LocalPepperVault.saveSeal(context, info.spaceId, matchedProfile, filePepper)
+                val session = activateUnlockedSession(
+                    context = context,
+                    tree = tree,
+                    info = info,
+                    profile = matchedProfile,
+                    unlockedMk = unlockedMk,
+                    canActivate = canActivate
+                )
+                if (session != null) return@withContext session
+            }
+            null
+        } finally {
+            Arrays.fill(pinChars, '\u0000')
+        }
+    }
+
+    private suspend fun activateUnlockedSession(
+        context: Context,
+        tree: VaultDirectoryTree,
+        info: VaultCryptoEngine.SpaceContainerInfo,
+        profile: VaultCryptoEngine.Argon2Profile,
+        unlockedMk: ByteArray,
+        canActivate: () -> Boolean
+    ): VaultSessionManager.ActiveVaultSession? {
+        var db: VaultDatabase? = null
+        var activated = false
+        try {
+            currentCoroutineContext().ensureActive()
+            if (!canActivate()) return null
+            val dbFile = File(tree.dbDir, "${info.spaceId}.db")
+            db = VaultDatabase.openSpaceDatabase(context, dbFile, unlockedMk)
+            val dao = db.vaultDao()
+            if (dao.getSpaceMetaSync() == null) {
+                dao.upsertSpaceMeta(
+                    VaultSpaceMetaEntity(
+                        spaceId = info.spaceId,
+                        spaceAlias = "私密空间 (${info.spaceId.take(4)})",
+                        isDecoy = false
+                    )
+                )
+            }
+            currentCoroutineContext().ensureActive()
+            if (!canActivate()) return null
+            val session = VaultSessionManager.ActiveVaultSession(
+                spaceId = info.spaceId,
+                containerFile = info.containerFile,
+                containerInfo = info,
+                kdfProfile = profile,
+                rawMasterKey = unlockedMk,
+                database = db
+            )
+            VaultSessionManager.activateSession(session)
+            activated = true
+            return session
+        } finally {
+            if (!activated) {
+                runCatching { db?.close() }
+                Arrays.fill(unlockedMk, 0.toByte())
+            }
+        }
+    }
+
+    fun verifyActiveSpaceSequence(
+        context: Context,
+        session: VaultSessionManager.ActiveVaultSession,
+        pinChars: CharArray
+    ): Boolean {
+        val info = VaultCryptoEngine.parseStealthContainer(session.containerFile) ?: return false
+        val sealed = LocalPepperVault.loadSeal(context, session.spaceId) ?: return false
+        val unwrapped = try {
+            VaultCryptoEngine.tryUnlockStealthContainer(
+                containerInfo = info,
+                pinChars = pinChars,
+                filePepper = sealed.filePepper,
+                params = sealed.profile.toParams()
+            )
+        } finally {
+            sealed.wipe()
+        } ?: return false
+
+        return try {
+            val currentKey = session.borrowMasterKeyCopy()
+            try {
+                java.security.MessageDigest.isEqual(unwrapped, currentKey)
+            } finally {
+                Arrays.fill(currentKey, 0.toByte())
+            }
+        } finally {
+            Arrays.fill(unwrapped, 0.toByte())
+        }
+    }
+
+    fun changeSpaceSequenceZeroReencryption(
+        context: Context,
+        session: VaultSessionManager.ActiveVaultSession,
+        oldPinChars: CharArray,
+        newPinChars: CharArray
+    ): Boolean {
+        val sealed = LocalPepperVault.loadSeal(context, session.spaceId) ?: return false
+        return try {
+            val rotated = VaultCryptoEngine.rotateStealthContainerCredentials(
+                containerFile = session.containerFile,
+                oldPinChars = oldPinChars,
+                oldPepper = sealed.filePepper,
+                oldParams = sealed.profile.toParams(),
+                newPinChars = newPinChars,
+                newPepper = sealed.filePepper,
+                newParams = sealed.profile.toParams()
+            )
+            rotated
+        } finally {
+            sealed.wipe()
+        }
+    }
+
+    fun rotateSpaceKeyfileZeroReencryption(
+        context: Context,
+        session: VaultSessionManager.ActiveVaultSession,
+        currentPinChars: CharArray,
+        newFilePepper: ByteArray
+    ): Boolean {
+        val oldSeal = LocalPepperVault.loadSeal(context, session.spaceId) ?: return false
+        val targetProfile = VaultCryptoEngine.Argon2Profile.selectForDevice()
+        return try {
+            val rotated = VaultCryptoEngine.rotateStealthContainerCredentials(
+                containerFile = session.containerFile,
+                oldPinChars = currentPinChars,
+                oldPepper = oldSeal.filePepper,
+                oldParams = oldSeal.profile.toParams(),
+                newPinChars = currentPinChars,
+                newPepper = newFilePepper,
+                newParams = targetProfile.toParams()
+            )
+            if (rotated) {
+                LocalPepperVault.saveSeal(context, session.spaceId, targetProfile, newFilePepper)
+            }
+            rotated
+        } finally {
+            oldSeal.wipe()
+        }
+    }
+
     suspend fun isSequenceAlreadyUsed(context: Context, sequence: String): Boolean =
         withContext(Dispatchers.Default) {
             val pinChars = sequence.toCharArray()
             try {
-                for (headerFile in listSpaceHeaderFiles(context)) {
-                    val info = VaultCryptoEngine.parseSpaceHeader(headerFile) ?: continue
-                    val mk = VaultCryptoEngine.tryUnlockSpaceHeader(info, pinChars)
+                for (containerFile in listSealedSpaceContainerFiles(context)) {
+                    val info = VaultCryptoEngine.parseStealthContainer(containerFile) ?: continue
+                    val sealed = LocalPepperVault.loadSeal(context, info.spaceId) ?: continue
+                    val mk = try {
+                        VaultCryptoEngine.tryUnlockStealthContainer(
+                            containerInfo = info,
+                            pinChars = pinChars,
+                            filePepper = sealed.filePepper,
+                            params = sealed.profile.toParams()
+                        )
+                    } finally {
+                        sealed.wipe()
+                    }
                     if (mk != null) {
                         Arrays.fill(mk, 0.toByte())
                         return@withContext true
@@ -746,20 +932,23 @@ object VaultStorageManager {
             var entry = zis.nextEntry
             while (entry != null) {
                 if (!entry.isDirectory) {
-                    val name = entry.name
-                    val targetFile = when {
-                        name.startsWith("spaces/") -> File(tree.spacesDir, File(name).name)
-                        name.startsWith("db/") -> File(tree.dbDir, File(name).name)
-                        name.startsWith("blobs/") -> File(tree.blobsDir, File(name).name)
-                        else -> null
-                    }
-                    if (targetFile != null) {
-                        FileOutputStream(targetFile).use { fos ->
-                            zis.copyTo(fos)
-                            fos.flush()
-                            fos.fd.sync()
+                    val safeName = File(entry.name).name
+                    if (safeName.isNotEmpty() && safeName != "." && safeName != "..") {
+                        val name = entry.name
+                        val targetFile = when {
+                            name.startsWith("spaces/") -> File(tree.spacesDir, safeName)
+                            name.startsWith("db/") -> File(tree.dbDir, safeName)
+                            name.startsWith("blobs/") -> File(tree.blobsDir, safeName)
+                            else -> null
                         }
-                        filesRestored++
+                        if (targetFile != null) {
+                            FileOutputStream(targetFile).use { fos ->
+                                zis.copyTo(fos)
+                                fos.flush()
+                                fos.fd.sync()
+                            }
+                            filesRestored++
+                        }
                     }
                 }
                 zis.closeEntry()
@@ -777,7 +966,8 @@ object VaultStorageManager {
         photosFolderId: Long,
         docsFolderId: Long,
         spaceId: String,
-        isDecoy: Boolean
+        isDecoy: Boolean,
+        profile: VaultCryptoEngine.Argon2Profile
     ) {
         try {
             val bannerBitmap = BitmapFactory.decodeResource(
@@ -861,13 +1051,14 @@ object VaultStorageManager {
 
             val specContent = """
                 # 空间安全说明 ($spaceId)
-                - 空间标识: `$spaceId`
-                - 头文件: `spaces/$spaceId.header` (128 Bytes)
-                - 密钥派生: `Argon2id (t=3, p=4)`
-                - 文件加密: `AES-256-GCM (64KB 分块流式加密)`
+                - 空间容器: `spaces/$spaceId.dat` (8,208 B · 64 诱饵槽位 · 无魔数)
+                - 双因子密钥: `256-bit 原文件摘要 (零指纹) + 计算序列`
+                - 本机便利封印: `AndroidKeyStore (StrongBox/TEE)` 加密存放在应用私有区
+                - 密钥派生: `Argon2id (${profile.memoryCostKb / 1024} MiB, t=${profile.timeCost}, p=${profile.parallelism}) + HMAC-SHA256`
+                - 文件加密: `无魔数 64KB AES-256-GCM 分块流式加密`
                 - 数据库: `SQLCipher (db/$spaceId.db)`
                 
-                所有图片与文档均通过内存流 `RandomAccessDecryptedStream` 实时解密渲染，不在磁盘产生任何临时明文文件。
+                注意：请妥善保留创建空间时所选原文件的副本（如电脑或网盘）；卸载重装或更换设备后，需要重新选择同一原文件与计算序列即可恢复。
             """.trimIndent()
             val specBytes = specContent.toByteArray(Charsets.UTF_8)
             val specBlobName = "${UUID.randomUUID().toString().replace("-", "")}.dat"

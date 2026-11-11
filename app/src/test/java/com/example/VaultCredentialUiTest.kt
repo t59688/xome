@@ -41,10 +41,19 @@ class VaultCredentialUiTest {
     }
 
     @Test fun initialSetupRejectsWeakAndUnreachableCredentialsBeforeProvisioning() {
-        listOf("1314", "123456", "12345a", "12345@", "++++++").forEach { secret ->
+        val dummyPepper = ByteArray(32) { 0x5A }
+        listOf("1314", "123456", "12345a", "12345@", "++++++", "1".repeat(65) + "+").forEach { secret ->
             val vm = XomeViewModel(ApplicationProvider.getApplicationContext<Application>())
-            vm.provisionInitialPrimarySpace(secret, secret)
+            vm.provisionInitialPrimarySpace(secret, secret, dummyPepper)
             assertNotNull("Must reject $secret", vm.onboardingError.value)
+        }
+    }
+
+    @Test fun initialSetupRejectsMissingOrMalformedKeyfileBeforeProvisioning() {
+        listOf<ByteArray?>(null, ByteArray(0), ByteArray(16) { 1 }).forEach { badPepper ->
+            val vm = XomeViewModel(ApplicationProvider.getApplicationContext<Application>())
+            vm.provisionInitialPrimarySpace("123+45", "123+45", badPepper)
+            assertNotNull("Must reject missing/invalid keyfile pepper", vm.onboardingError.value)
         }
     }
 }

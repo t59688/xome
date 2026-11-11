@@ -17,68 +17,170 @@ import org.junit.Test
 class ExampleUnitTest {
 
     @Test
-    fun weakReplacementCannotChangeExistingVaultCredential() {
-        val tempDir = Files.createTempDirectory("xome_rotation_test").toFile()
+    fun keyfilePepper_isDeterministicPerFile_andRejectsEmptyStream() {
+        val pepper1a = ByteArrayInputStream("original-pdf-content-v1".toByteArray()).use {
+            VaultCryptoEngine.computeKeyfilePepper(it)
+        }
+        val pepper1b = ByteArrayInputStream("original-pdf-content-v1".toByteArray()).use {
+            VaultCryptoEngine.computeKeyfilePepper(it)
+        }
+        val pepper2 = ByteArrayInputStream("original-pdf-content-v2".toByteArray()).use {
+            VaultCryptoEngine.computeKeyfilePepper(it)
+        }
         try {
-            val headerFile = File(tempDir, "legacy.header")
-            val original = VaultCryptoEngine.createSpaceHeaderBytes(
-                "1314".toCharArray(), ByteArray(32) { 7 }, 4096, 1, 1
-            )
-            headerFile.writeBytes(original)
-            assertFalse(VaultCryptoEngine.changeSpacePinZeroReencryption(
-                headerFile, "1314".toCharArray(), "123456".toCharArray()
-            ))
-            assertArrayEquals(original, headerFile.readBytes())
+            assertEquals(VaultCryptoEngine.KEYFILE_PEPPER_BYTES, pepper1a.pepper.size)
+            assertEquals(23L, pepper1a.byteCount)
+            assertArrayEquals(pepper1a.pepper, pepper1b.pepper)
+            assertFalse(pepper1a.pepper.contentEquals(pepper2.pepper))
+
+            var threw = false
+            try {
+                ByteArrayInputStream(ByteArray(0)).use {
+                    VaultCryptoEngine.computeKeyfilePepper(it)
+                }
+            } catch (_: IllegalArgumentException) {
+                threw = true
+            }
+            assertTrue("Empty keyfile must be rejected", threw)
         } finally {
-            tempDir.deleteRecursively()
+            pepper1a.wipe()
+            pepper1b.wipe()
+            pepper2.wipe()
         }
     }
 
     @Test
-    fun spaceHeader_128Bytes_createParseAndZeroReencryptionPinChange() {
-        val tempDir = Files.createTempDirectory("xome_test").toFile()
+    fun stealthContainer_8208Bytes_zeroMagic_slotChaff_recoveryAndRotations() {
+        val tempDir = Files.createTempDirectory("xome_v2_container_test").toFile()
         try {
-            val headerFile = File(tempDir, "8f3a1b9c.header")
+            val containerFile = File(tempDir, "8f3a1b9c.dat")
             val originalMasterKey = VaultCryptoEngine.randomBytes(32)
+            val pepperA = ByteArrayInputStream("alice-master-keyfile-binary".toByteArray()).use {
+                VaultCryptoEngine.computeKeyfilePepper(it)
+            }
+            val pepperB = ByteArrayInputStream("alice-rotated-keyfile-binary".toByteArray()).use {
+                VaultCryptoEngine.computeKeyfilePepper(it)
+            }
+            val testParams = VaultCryptoEngine.Argon2Params(4096, 2, 2)
 
-            val headerBytes = VaultCryptoEngine.createSpaceHeaderBytes(
-                pinChars = "1314".toCharArray(),
+            val containerBytes = VaultCryptoEngine.createStealthContainerBytes(
+                pinChars = "1314+20".toCharArray(),
+                filePepper = pepperA.pepper,
                 masterKey = originalMasterKey,
-                memoryCostKb = 4096,
-                timeCost = 2,
-                parallelism = 2
+                params = testParams
             )
-            assertEquals(128, headerBytes.size)
-            headerFile.writeBytes(headerBytes)
+            assertEquals(VaultCryptoEngine.CONTAINER_SIZE_BYTES, containerBytes.size)
+            assertEquals(8208, containerBytes.size)
 
-            val parsed = VaultCryptoEngine.parseSpaceHeader(headerFile)
+            // Magic-free check: no recognizable ASCII container signature exists
+            val ascii = String(containerBytes, Charsets.ISO_8859_1)
+            assertFalse(ascii.contains("CLCVLT"))
+            assertFalse(ascii.contains("VBLK"))
+            assertFalse(ascii.contains("XOME"))
+
+            containerFile.writeBytes(containerBytes)
+
+            val parsed = VaultCryptoEngine.parseStealthContainer(containerFile)
             assertNotNull(parsed)
             assertEquals("8f3a1b9c", parsed!!.spaceId)
 
-            // Wrong PIN returns null
-            assertNull(VaultCryptoEngine.tryUnlockSpaceHeader(parsed, "9999".toCharArray()))
+            val slotIndex = VaultCryptoEngine.computeSlotIndex(pepperA.pepper, parsed.containerNonce)
+            assertTrue(slotIndex in 0 until VaultCryptoEngine.SLOT_COUNT)
 
-            // Correct PIN unwraps exact 32B MasterKey
-            val unlockedMk = VaultCryptoEngine.tryUnlockSpaceHeader(parsed, "1314".toCharArray())
+            // Wrong sequence fails even with right Keyfile
+            assertNull(
+                VaultCryptoEngine.tryUnlockStealthContainer(
+                    parsed, "9999+99".toCharArray(), pepperA.pepper, testParams
+                )
+            )
+            // Wrong Keyfile fails even with right sequence
+            assertNull(
+                VaultCryptoEngine.tryUnlockStealthContainer(
+                    parsed, "1314+20".toCharArray(), pepperB.pepper, testParams
+                )
+            )
+
+            // Right sequence + right Keyfile unwraps exact 32B MasterKey
+            val unlockedMk = VaultCryptoEngine.tryUnlockStealthContainer(
+                parsed, "1314+20".toCharArray(), pepperA.pepper, testParams
+            )
             assertNotNull(unlockedMk)
             assertArrayEquals(originalMasterKey, unlockedMk)
 
-            // Zero Re-encryption Password Change to "9988+11"
-            val rotated = VaultCryptoEngine.changeSpacePinZeroReencryption(
-                headerFile = headerFile,
-                oldPinChars = "1314".toCharArray(),
-                newPinChars = "9988+11".toCharArray()
+            // Weak sequence replacement cannot modify existing stealth container
+            assertFalse(
+                VaultCryptoEngine.rotateStealthContainerCredentials(
+                    containerFile = containerFile,
+                    oldPinChars = "1314+20".toCharArray(),
+                    oldPepper = pepperA.pepper,
+                    oldParams = testParams,
+                    newPinChars = "123456".toCharArray(),
+                    newPepper = pepperA.pepper,
+                    newParams = testParams
+                )
             )
-            assertTrue(rotated)
-            assertEquals(128L, headerFile.length())
+            assertArrayEquals(containerBytes, containerFile.readBytes())
 
-            val reparsed = VaultCryptoEngine.parseSpaceHeader(headerFile)!!
-            assertEquals(65536, reparsed.memoryCostKb)
-            assertEquals(3, reparsed.timeCost)
-            assertNull(VaultCryptoEngine.tryUnlockSpaceHeader(reparsed, "1314".toCharArray()))
-            val unlockedWithNewPin = VaultCryptoEngine.tryUnlockSpaceHeader(reparsed, "9988+11".toCharArray())
-            assertNotNull(unlockedWithNewPin)
-            assertArrayEquals(originalMasterKey, unlockedWithNewPin)
+            // Zero Re-encryption Password Change: "1314+20" -> "9988+11"
+            assertTrue(
+                VaultCryptoEngine.rotateStealthContainerCredentials(
+                    containerFile = containerFile,
+                    oldPinChars = "1314+20".toCharArray(),
+                    oldPepper = pepperA.pepper,
+                    oldParams = testParams,
+                    newPinChars = "9988+11".toCharArray(),
+                    newPepper = pepperA.pepper,
+                    newParams = VaultCryptoEngine.Argon2Profile.COMPACT.toParams()
+                )
+            )
+            assertEquals(8208L, containerFile.length())
+
+            val reparsedAfterSeqChange = VaultCryptoEngine.parseStealthContainer(containerFile)!!
+            assertNull(
+                VaultCryptoEngine.tryUnlockStealthContainer(
+                    reparsedAfterSeqChange,
+                    "1314+20".toCharArray(),
+                    pepperA.pepper,
+                    VaultCryptoEngine.Argon2Profile.COMPACT.toParams()
+                )
+            )
+            // Cross-device recovery probes fixed tiers cleanly without stored KDF hints
+            val recovered = VaultCryptoEngine.tryRecoverStealthContainer(
+                containerInfo = reparsedAfterSeqChange,
+                pinChars = "9988+11".toCharArray(),
+                filePepper = pepperA.pepper,
+                profiles = listOf(VaultCryptoEngine.Argon2Profile.COMPACT)
+            )
+            assertNotNull(recovered)
+            assertEquals(VaultCryptoEngine.Argon2Profile.COMPACT, recovered!!.second)
+            assertArrayEquals(originalMasterKey, recovered.first)
+
+            // Zero Re-encryption Keyfile Rotation: pepperA -> pepperB (keeps sequence)
+            assertTrue(
+                VaultCryptoEngine.rotateStealthContainerCredentials(
+                    containerFile = containerFile,
+                    oldPinChars = "9988+11".toCharArray(),
+                    oldPepper = pepperA.pepper,
+                    oldParams = VaultCryptoEngine.Argon2Profile.COMPACT.toParams(),
+                    newPinChars = "9988+11".toCharArray(),
+                    newPepper = pepperB.pepper,
+                    newParams = testParams
+                )
+            )
+            val reparsedAfterKeyfileRotation = VaultCryptoEngine.parseStealthContainer(containerFile)!!
+            assertNull(
+                VaultCryptoEngine.tryUnlockStealthContainer(
+                    reparsedAfterKeyfileRotation, "9988+11".toCharArray(), pepperA.pepper, testParams
+                )
+            )
+            val unlockedWithRotatedKeyfile = VaultCryptoEngine.tryUnlockStealthContainer(
+                reparsedAfterKeyfileRotation, "9988+11".toCharArray(), pepperB.pepper, testParams
+            )
+            assertNotNull(unlockedWithRotatedKeyfile)
+            assertArrayEquals(originalMasterKey, unlockedWithRotatedKeyfile)
+
+            pepperA.wipe()
+            pepperB.wipe()
         } finally {
             tempDir.deleteRecursively()
         }
@@ -98,8 +200,12 @@ class ExampleUnitTest {
                 VaultCryptoEngine.encryptStreamToBlobFile(masterKey, bais, blobFile)
             }
             assertEquals(150_000L, written)
-            // Expected size: 80B header (0x00..0x4F) + 3 chunks * 16B tag + 150,000B ciphertext
+            // Expected size: 80B magic-free header (0x00..0x4F) + 3 chunks * 16B tag + 150,000B ciphertext
             assertEquals(VaultCryptoEngine.FILE_HEADER_SIZE_BYTES.toLong() + 150_000L + 3L * 16L, blobFile.length())
+            val headerSlice = blobFile.inputStream().use { ins ->
+                ByteArray(VaultCryptoEngine.FILE_HEADER_SIZE_BYTES).also { ins.read(it) }
+            }
+            assertFalse(String(headerSlice, Charsets.ISO_8859_1).contains("VBLK"))
 
             RandomAccessDecryptedStream(blobFile, masterKey).use { stream ->
                 assertEquals(3, stream.totalChunks)

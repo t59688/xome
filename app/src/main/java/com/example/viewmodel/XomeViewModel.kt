@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.provider.OpenableColumns
 import com.example.calculator.ScientificCalculatorEngine
 import com.example.crypto.RandomAccessDecryptedStream
 import com.example.crypto.RootSecurityDetector
@@ -20,7 +21,6 @@ import com.example.storage.VaultStorageManager
 import com.example.ui.i18n.AppLanguage
 import com.example.update.UpdateRepository
 import java.io.File
-import java.security.MessageDigest
 import java.util.Arrays
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
@@ -84,6 +84,16 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _flagSecureWindowEnabled = MutableStateFlow(!isStreamingEmulator)
     val flagSecureWindowEnabled: StateFlow<Boolean> = _flagSecureWindowEnabled.asStateFlow()
 
+    data class KeyfileSelection(
+        val displayName: String,
+        val byteCount: Long,
+        val pepper: ByteArray
+    ) {
+        fun wipe() {
+            Arrays.fill(pepper, 0.toByte())
+        }
+    }
+
     // Onboarding & Self-Healing state
     private val _needsOnboarding = MutableStateFlow(false)
     val needsOnboarding: StateFlow<Boolean> = _needsOnboarding.asStateFlow()
@@ -96,6 +106,15 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _onboardingError = MutableStateFlow<String?>(null)
     val onboardingError: StateFlow<String?> = _onboardingError.asStateFlow()
+
+    private val _isRecoveringSpace = MutableStateFlow(false)
+    val isRecoveringSpace: StateFlow<Boolean> = _isRecoveringSpace.asStateFlow()
+
+    private val _recoveryError = MutableStateFlow<String?>(null)
+    val recoveryError: StateFlow<String?> = _recoveryError.asStateFlow()
+
+    private val _unsealedRecoverableSpaces = MutableStateFlow(0)
+    val unsealedRecoverableSpaces: StateFlow<Int> = _unsealedRecoverableSpaces.asStateFlow()
 
     private val _totalProvisionedSpaces = MutableStateFlow(0)
     val totalProvisionedSpaces: StateFlow<Int> = _totalProvisionedSpaces.asStateFlow()
@@ -235,9 +254,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val report = RootSecurityDetector.inspectEnvironment()
             _environmentSecurityReport.value = report
-            val headers = VaultStorageManager.listSpaceHeaderFiles(appContext)
-            _totalProvisionedSpaces.value = headers.size
-            _needsOnboarding.value = headers.isEmpty()
+            val sealed = VaultStorageManager.listSealedSpaceContainerFiles(appContext)
+            _totalProvisionedSpaces.value = sealed.size
+            _unsealedRecoverableSpaces.value = VaultStorageManager.countUnsealedSpaceContainers(appContext)
+            _needsOnboarding.value = sealed.isEmpty()
         }
 
         viewModelScope.launch {
@@ -260,7 +280,9 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     withContext(Dispatchers.IO) {
                         _totalProvisionedSpaces.value =
-                            VaultStorageManager.listSpaceHeaderFiles(appContext).size
+                            VaultStorageManager.listSealedSpaceContainerFiles(appContext).size
+                        _unsealedRecoverableSpaces.value =
+                            VaultStorageManager.countUnsealedSpaceContainers(appContext)
                     }
                 }
             }
@@ -297,9 +319,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshSelfHealingStatus() {
         viewModelScope.launch(Dispatchers.IO) {
-            val headers = VaultStorageManager.listSpaceHeaderFiles(appContext)
-            _totalProvisionedSpaces.value = headers.size
-            _needsOnboarding.value = headers.isEmpty()
+            val sealed = VaultStorageManager.listSealedSpaceContainerFiles(appContext)
+            _totalProvisionedSpaces.value = sealed.size
+            _unsealedRecoverableSpaces.value = VaultStorageManager.countUnsealedSpaceContainers(appContext)
+            _needsOnboarding.value = sealed.isEmpty()
         }
     }
 
@@ -309,12 +332,57 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openOnboardingSetup() {
         _onboardingError.value = null
+        _recoveryError.value = null
+        refreshSelfHealingStatus()
         _showSetupDialog.value = true
+    }
+
+    suspend fun extractKeyfileDigest(uri: Uri): Result<KeyfileSelection> = withContext(Dispatchers.IO) {
+        try {
+            val resolver = appContext.contentResolver
+            var displayName = if (isZh()) "已选原文件" else "Selected Keyfile"
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && !cursor.isNull(idx)) {
+                        displayName = cursor.getString(idx)
+                    }
+                }
+            }
+            val digest = resolver.openInputStream(uri)?.use { stream ->
+                VaultCryptoEngine.computeKeyfilePepper(stream)
+            } ?: return@withContext Result.failure(
+                IllegalStateException(if (isZh()) "无法读取所选文件" else "Unable to read the selected file")
+            )
+            Result.success(
+                KeyfileSelection(
+                    displayName = displayName,
+                    byteCount = digest.byteCount,
+                    pepper = digest.pepper
+                )
+            )
+        } catch (e: IllegalArgumentException) {
+            Result.failure(
+                IllegalArgumentException(
+                    if (isZh()) "所选文件为空（0 字节），请换用非空原文件"
+                    else "Selected file is empty (0 bytes). Choose a non-empty file.",
+                    e
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(
+                IllegalStateException(
+                    if (isZh()) "读取钥匙文件失败，请重试" else "Failed to read Keyfile. Please try again.",
+                    e
+                )
+            )
+        }
     }
 
     fun provisionInitialPrimarySpace(
         rawSequence: String,
         confirmSequence: String,
+        keyfilePepper: ByteArray?,
         spaceAlias: String = "Main Space",
         enterCalculatorFirst: Boolean = false
     ) {
@@ -323,9 +391,9 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
 
         if (!VaultSequencePolicy.isValidNewSequence(cleanSeq)) {
             _onboardingError.value = if (isZh()) {
-                "解锁序列需为 6 至 16 位，且同时包含数字与计算器符号"
+                "解锁序列需为 6 至 64 位，且同时包含数字与计算器符号"
             } else {
-                "Use 6–16 characters combining digits and calculator symbols."
+                "Use 6–64 characters combining digits and calculator symbols."
             }
             return
         }
@@ -333,9 +401,18 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
             _onboardingError.value = if (isZh()) "两次输入的序列不一致" else "Confirmation sequence does not match."
             return
         }
+        if (keyfilePepper == null || keyfilePepper.size != VaultCryptoEngine.KEYFILE_PEPPER_BYTES) {
+            _onboardingError.value = if (isZh()) {
+                "请先选择一个原文件作为实体钥匙（Keyfile）"
+            } else {
+                "Select an original file as your Keyfile first."
+            }
+            return
+        }
 
         _onboardingError.value = null
         _isProvisioningOnboarding.value = true
+        val pepperCopy = keyfilePepper.copyOf()
 
         viewModelScope.launch {
             val pinChars = cleanSeq.toCharArray()
@@ -344,6 +421,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 VaultStorageManager.provisionNewSpace(
                     context = appContext,
                     pinChars = pinChars,
+                    filePepper = pepperCopy,
                     spaceAlias = spaceAlias.ifBlank { defaultAlias },
                     isDecoy = false,
                     seedSampleFiles = true,
@@ -361,10 +439,81 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             } catch (e: Exception) {
-                _onboardingError.value = "Failed: ${e.message}"
+                _onboardingError.value = if (isZh()) "初始化失败: ${e.message}" else "Setup failed: ${e.message}"
             } finally {
                 Arrays.fill(pinChars, '\u0000')
+                Arrays.fill(pepperCopy, 0.toByte())
                 _isProvisioningOnboarding.value = false
+            }
+        }
+    }
+
+    fun recoverExistingSpaceWithKeyfile(
+        rawSequence: String,
+        keyfilePepper: ByteArray?,
+        onRecovered: () -> Unit = {}
+    ) {
+        val cleanSeq = VaultSequencePolicy.normalize(rawSequence)
+        if (!VaultSequencePolicy.isValidUnlockCandidate(cleanSeq)) {
+            _recoveryError.value = if (isZh()) {
+                "请输入有效的解锁序列（6–64 位）"
+            } else {
+                "Enter a valid unlock sequence (6–64 characters)."
+            }
+            return
+        }
+        if (keyfilePepper == null || keyfilePepper.size != VaultCryptoEngine.KEYFILE_PEPPER_BYTES) {
+            _recoveryError.value = if (isZh()) {
+                "请先选择创建空间时绑定的原文件（Keyfile）"
+            } else {
+                "Select the original Keyfile used when creating the space."
+            }
+            return
+        }
+
+        _recoveryError.value = null
+        _isRecoveringSpace.value = true
+        val pepperCopy = keyfilePepper.copyOf()
+
+        viewModelScope.launch {
+            try {
+                val rawTrim = rawSequence.trim()
+                val recovered = withContext(Dispatchers.Default) {
+                    VaultStorageManager.recoverSpaceWithKeyfile(
+                        context = appContext,
+                        rawSequence = cleanSeq,
+                        filePepper = pepperCopy
+                    ) ?: if (rawTrim != cleanSeq) {
+                        VaultStorageManager.recoverSpaceWithKeyfile(
+                            context = appContext,
+                            rawSequence = rawTrim,
+                            filePepper = pepperCopy
+                        )
+                    } else null
+                }
+                if (recovered != null) {
+                    withContext(Dispatchers.IO) { unlockThrottle.onSuccess() }
+                    refreshSelfHealingStatus()
+                    _showSetupDialog.value = false
+                    showBanner(
+                        if (isZh()) "原文件绑定并恢复成功，后续只需输入计算序列即可解锁"
+                        else "Space recovered and sealed to this device. Use sequence alone next time."
+                    )
+                    onRecovered()
+                } else {
+                    _recoveryError.value = if (isZh()) {
+                        "未匹配到空间：请确认原文件（未被压缩/修改）与解锁序列均正确"
+                    } else {
+                        "No matching space found. Verify both the unmodified Keyfile and sequence."
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _recoveryError.value = if (isZh()) "恢复失败: ${e.message}" else "Recovery failed: ${e.message}"
+            } finally {
+                Arrays.fill(pepperCopy, 0.toByte())
+                _isRecoveringSpace.value = false
             }
         }
     }
@@ -452,7 +601,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         if (rawExpr.isEmpty()) return
         invalidateHiddenUnlock()
         val normalizedCandidate = VaultSequencePolicy.normalize(rawExpr)
-        val couldBeCredential = VaultSequencePolicy.isValidLegacySequence(normalizedCandidate)
+        val couldBeCredential = VaultSequencePolicy.isValidUnlockCandidate(normalizedCandidate)
         // Do not expose a candidate in history while verification is pending.
         performNormalMathEvaluation(rawExpr, recordHistory = !couldBeCredential)
         if (!couldBeCredential) return
@@ -462,7 +611,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
             hiddenUnlockMutex.withLock {
                 try {
                     val hasSpaces = withContext(Dispatchers.IO) {
-                        VaultStorageManager.hasExistingSpaces(appContext)
+                        VaultStorageManager.hasReadyLocalSpaces(appContext)
                     }
 
                     if (hiddenUnlockEpoch.get() != attemptEpoch) return@launch
@@ -945,7 +1094,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         onComplete: (Boolean) -> Unit
     ) {
         val currentSession = activeSession.value
-        if (currentSession == null || sequence.trim().length !in 4..16) {
+        if (currentSession == null || !VaultSequencePolicy.isValidUnlockCandidate(sequence)) {
             onComplete(false)
             return
         }
@@ -954,21 +1103,9 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
             val normalizedChars = VaultSequencePolicy.normalize(sequence).toCharArray()
             val valid = try {
                 withContext(Dispatchers.Default) {
-                    val header = VaultCryptoEngine.parseSpaceHeader(currentSession.headerFile)
-                        ?: return@withContext false
-                    val unwrapped = VaultCryptoEngine.tryUnlockSpaceHeader(header, normalizedChars)
-                        ?: (if (!chars.contentEquals(normalizedChars)) VaultCryptoEngine.tryUnlockSpaceHeader(header, chars) else null)
-                        ?: return@withContext false
-                    try {
-                        val currentKey = currentSession.borrowMasterKeyCopy()
-                        try {
-                            MessageDigest.isEqual(unwrapped, currentKey)
-                        } finally {
-                            Arrays.fill(currentKey, 0.toByte())
-                        }
-                    } finally {
-                        Arrays.fill(unwrapped, 0.toByte())
-                    }
+                    VaultStorageManager.verifyActiveSpaceSequence(appContext, currentSession, normalizedChars) ||
+                        (!chars.contentEquals(normalizedChars) &&
+                            VaultStorageManager.verifyActiveSpaceSequence(appContext, currentSession, chars))
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -999,7 +1136,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         if (!VaultSequencePolicy.isValidNewSequence(cleanNew)) {
             onComplete(
                 false,
-                if (isZh()) "新序列需为 6 至 16 位，且同时包含数字与计算器符号" else "Use 6–16 characters combining digits and calculator symbols."
+                if (isZh()) "新序列需为 6 至 64 位，且同时包含数字与计算器符号" else "Use 6–64 characters combining digits and calculator symbols."
             )
             return
         }
@@ -1029,12 +1166,18 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val ok = withContext(Dispatchers.Default) {
-                    VaultCryptoEngine.changeSpacePinZeroReencryption(
-                        headerFile = session.headerFile,
+                    VaultStorageManager.changeSpaceSequenceZeroReencryption(
+                        context = appContext,
+                        session = session,
                         oldPinChars = oldChars,
                         newPinChars = newChars
                     ) || (!oldChars.contentEquals(normalizedOldChars) &&
-                        VaultCryptoEngine.changeSpacePinZeroReencryption(session.headerFile, normalizedOldChars, newChars))
+                        VaultStorageManager.changeSpaceSequenceZeroReencryption(
+                            context = appContext,
+                            session = session,
+                            oldPinChars = normalizedOldChars,
+                            newPinChars = newChars
+                        ))
                 }
                 val elapsed = System.currentTimeMillis() - startMs
                 if (ok) {
@@ -1063,9 +1206,75 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun rotateCurrentSpaceKeyfile(
+        currentSequence: String,
+        newKeyfilePepper: ByteArray?,
+        onComplete: (Boolean, String) -> Unit
+    ) {
+        val session = activeSession.value ?: run {
+            onComplete(false, "No active session.")
+            return
+        }
+        if (newKeyfilePepper == null || newKeyfilePepper.size != VaultCryptoEngine.KEYFILE_PEPPER_BYTES) {
+            onComplete(
+                false,
+                if (isZh()) "请先选择新的原文件作为实体钥匙" else "Select a new Keyfile first."
+            )
+            return
+        }
+        val cleanCur = currentSequence.trim()
+        val pepperCopy = newKeyfilePepper.copyOf()
+
+        viewModelScope.launch {
+            val startMs = System.currentTimeMillis()
+            val curChars = cleanCur.toCharArray()
+            val normalizedCurChars = VaultSequencePolicy.normalize(cleanCur).toCharArray()
+            try {
+                val ok = withContext(Dispatchers.Default) {
+                    VaultStorageManager.rotateSpaceKeyfileZeroReencryption(
+                        context = appContext,
+                        session = session,
+                        currentPinChars = curChars,
+                        newFilePepper = pepperCopy
+                    ) || (!curChars.contentEquals(normalizedCurChars) &&
+                        VaultStorageManager.rotateSpaceKeyfileZeroReencryption(
+                            context = appContext,
+                            session = session,
+                            currentPinChars = normalizedCurChars,
+                            newFilePepper = pepperCopy
+                        ))
+                }
+                val elapsed = System.currentTimeMillis() - startMs
+                if (ok) {
+                    val msg = if (isZh()) {
+                        "钥匙文件已更换 (${elapsed}ms)，请妥善保留新原文件副本"
+                    } else {
+                        "Keyfile rotated (${elapsed}ms). Keep a safe copy of the new file."
+                    }
+                    showBanner(msg)
+                    onComplete(true, msg)
+                } else {
+                    onComplete(
+                        false,
+                        if (isZh()) "当前解锁序列不正确" else "Current sequence is incorrect."
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                onComplete(false, if (isZh()) "更换失败，请重试" else "Could not rotate Keyfile. Try again.")
+            } finally {
+                Arrays.fill(curChars, '\u0000')
+                Arrays.fill(normalizedCurChars, '\u0000')
+                Arrays.fill(pepperCopy, 0.toByte())
+            }
+        }
+    }
+
     fun createIndependentDecoySpace(
         newSequence: String,
         confirmSequence: String,
+        keyfilePepper: ByteArray?,
         spaceAlias: String,
         isDecoy: Boolean,
         includeSampleFiles: Boolean,
@@ -1078,7 +1287,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         if (!VaultSequencePolicy.isValidNewSequence(cleanSeq)) {
             onComplete(
                 false,
-                if (isZh()) "解锁序列需为 6 至 16 位，且同时包含数字与计算器符号" else "Use 6–16 characters combining digits and calculator symbols."
+                if (isZh()) "解锁序列需为 6 至 64 位，且同时包含数字与计算器符号" else "Use 6–64 characters combining digits and calculator symbols."
             )
             return
         }
@@ -1089,7 +1298,15 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
+        if (keyfilePepper == null || keyfilePepper.size != VaultCryptoEngine.KEYFILE_PEPPER_BYTES) {
+            onComplete(
+                false,
+                if (isZh()) "请先选择该空间的钥匙文件（Keyfile）" else "Select a Keyfile for this space first."
+            )
+            return
+        }
 
+        val pepperCopy = keyfilePepper.copyOf()
         viewModelScope.launch {
             val pinChars = cleanSeq.toCharArray()
             try {
@@ -1104,6 +1321,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 VaultStorageManager.provisionNewSpace(
                     context = appContext,
                     pinChars = pinChars,
+                    filePepper = pepperCopy,
                     spaceAlias = spaceAlias.ifBlank {
                         if (isZh()) (if (isDecoy) "访客空间" else "私密空间")
                         else (if (isDecoy) "Guest Space" else "Private Space")
@@ -1126,6 +1344,7 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                 onComplete(false, if (isZh()) "创建失败，请重试" else "Could not create the space. Try again.")
             } finally {
                 Arrays.fill(pinChars, '\u0000')
+                Arrays.fill(pepperCopy, 0.toByte())
             }
         }
     }
@@ -1157,9 +1376,10 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
                     } ?: 0
                 }
                 refreshSelfHealingStatus()
+                _recoveryError.value = null
                 showBanner(
-                    if (isZh()) "已恢复 $count 项加密数据，在计算器输入原密码并按 = 即可解锁"
-                    else "Restored $count items. Enter your sequence + = on calculator to unlock."
+                    if (isZh()) "已导入 $count 项加密数据，请继续绑定原钥匙文件并验证序列"
+                    else "Imported $count items. Bind the original Keyfile and sequence to unlock."
                 )
             } catch (e: Exception) {
                 showBanner("Restore failed: ${e.message}", isError = true)

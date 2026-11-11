@@ -41,10 +41,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Functions
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SecurityUpdateGood
@@ -70,10 +73,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -94,6 +100,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.ui.i18n.AppLanguage
 import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.CalcAccentMuted
 import com.example.ui.theme.CalcAccentCopper
@@ -115,7 +122,10 @@ import com.example.ui.theme.VaultEmeraldSuccess
 import com.example.ui.theme.VaultSurface
 import com.example.ui.theme.VaultSurfaceElevated
 import com.example.ui.graph.GraphStudioScreen
+import com.example.ui.vault.KeyfilePickerCard
+import com.example.ui.vault.VaultWizardRules
 import com.example.viewmodel.XomeViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -125,6 +135,9 @@ fun DisguisedCalculatorScreen(
     showSetupDialog: Boolean,
     isProvisioningOnboarding: Boolean,
     onboardingError: String?,
+    isRecoveringSpace: Boolean = false,
+    recoveryError: String? = null,
+    unsealedRecoverableSpaces: Int = 0,
     totalProvisionedSpaces: Int,
     statusBanner: XomeViewModel.StatusBanner?,
     onInputToken: (String) -> Unit,
@@ -136,7 +149,11 @@ fun DisguisedCalculatorScreen(
     onToggleHistory: () -> Unit,
     onClearHistory: () -> Unit,
     onToggleLanguage: () -> Unit,
-    onProvisionPrimarySpace: (pin: String, confirm: String, alias: String, stayInCalc: Boolean) -> Unit,
+    onProvisionPrimarySpace: (pin: String, confirm: String, keyfilePepper: ByteArray?, alias: String, stayInCalc: Boolean) -> Unit,
+    onExtractKeyfileDigest: suspend (android.net.Uri) -> Result<XomeViewModel.KeyfileSelection> = {
+        Result.failure(IllegalStateException("Not configured"))
+    },
+    onRecoverSpaceWithKeyfile: (pin: String, keyfilePepper: ByteArray?) -> Unit = { _, _ -> },
     onDismissOnboarding: () -> Unit,
     onOpenOnboarding: () -> Unit,
     onImportSelfHealingArchive: (android.net.Uri) -> Unit,
@@ -309,7 +326,12 @@ fun DisguisedCalculatorScreen(
                 FirstLaunchVaultSetupSheet(
                     isProvisioning = isProvisioningOnboarding,
                     errorText = onboardingError,
+                    isRecovering = isRecoveringSpace,
+                    recoveryError = recoveryError,
+                    unsealedRecoverableSpaces = unsealedRecoverableSpaces,
                     onProvision = onProvisionPrimarySpace,
+                    onExtractKeyfileDigest = onExtractKeyfileDigest,
+                    onRecoverSpace = onRecoverSpaceWithKeyfile,
                     onSkipToCalculator = onDismissOnboarding,
                     onRestoreArchive = {
                         archiveRestoreLauncher.launch(arrayOf("*/*"))
@@ -939,14 +961,78 @@ private fun TactileCalcKey(
 internal fun FirstLaunchVaultSetupSheet(
     isProvisioning: Boolean,
     errorText: String?,
-    onProvision: (pin: String, confirm: String, alias: String, stayInCalc: Boolean) -> Unit,
+    isRecovering: Boolean = false,
+    recoveryError: String? = null,
+    unsealedRecoverableSpaces: Int = 0,
+    onProvision: (pin: String, confirm: String, keyfilePepper: ByteArray?, alias: String, stayInCalc: Boolean) -> Unit,
+    onExtractKeyfileDigest: suspend (android.net.Uri) -> Result<XomeViewModel.KeyfileSelection> = {
+        Result.failure(IllegalStateException("Not configured"))
+    },
+    onRecoverSpace: (pin: String, keyfilePepper: ByteArray?) -> Unit = { _, _ -> },
     onSkipToCalculator: () -> Unit,
-    onRestoreArchive: () -> Unit
+    onRestoreArchive: () -> Unit,
+    initialKeyfile: XomeViewModel.KeyfileSelection? = null
 ) {
     val strings = LocalAppStrings.current
+    val zh = strings.language == AppLanguage.ZH
+    val scope = rememberCoroutineScope()
+
+    var activeTab by rememberSaveable { mutableIntStateOf(0) } // 0 = Create, 1 = Recover
     var sequence by remember { mutableStateOf("") }
     var confirmSequence by remember { mutableStateOf("") }
+    var recoverSequence by remember { mutableStateOf("") }
     var spaceAlias by rememberSaveable { mutableStateOf(strings.defaultPrimarySpaceAlias) }
+
+    var createKeyfile by remember { mutableStateOf(initialKeyfile) }
+    var recoverKeyfile by remember { mutableStateOf(initialKeyfile) }
+    var isHashingCreateKeyfile by remember { mutableStateOf(false) }
+    var isHashingRecoverKeyfile by remember { mutableStateOf(false) }
+    var keyfilePickError by remember { mutableStateOf<String?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            createKeyfile?.wipe()
+            recoverKeyfile?.wipe()
+        }
+    }
+
+    val createKeyfileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            isHashingCreateKeyfile = true
+            keyfilePickError = null
+            scope.launch {
+                val result = onExtractKeyfileDigest(uri)
+                isHashingCreateKeyfile = false
+                result.onSuccess { selection ->
+                    createKeyfile?.wipe()
+                    createKeyfile = selection
+                }.onFailure { err ->
+                    keyfilePickError = err.message
+                }
+            }
+        }
+    }
+
+    val recoverKeyfileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            isHashingRecoverKeyfile = true
+            keyfilePickError = null
+            scope.launch {
+                val result = onExtractKeyfileDigest(uri)
+                isHashingRecoverKeyfile = false
+                result.onSuccess { selection ->
+                    recoverKeyfile?.wipe()
+                    recoverKeyfile = selection
+                }.onFailure { err ->
+                    keyfilePickError = err.message
+                }
+            }
+        }
+    }
 
     LaunchedEffect(strings.language) {
         if (spaceAlias in listOf("Main Space", "主空间", "Primary Sovereign Vault", "主加密私密空间")) {
@@ -958,14 +1044,14 @@ internal fun FirstLaunchVaultSetupSheet(
         modifier = Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 22.dp, vertical = 20.dp)
+            .padding(horizontal = 20.dp, vertical = 18.dp)
             .navigationBarsPadding(),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(110.dp)
+                .height(96.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .border(1.dp, VaultBorderSubtle, RoundedCornerShape(18.dp))
         ) {
@@ -980,7 +1066,7 @@ internal fun FirstLaunchVaultSetupSheet(
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
-                            listOf(Color.Transparent, VaultSurface.copy(alpha = 0.92f))
+                            listOf(Color.Transparent, VaultSurface.copy(alpha = 0.94f))
                         )
                     )
             )
@@ -1006,150 +1092,207 @@ internal fun FirstLaunchVaultSetupSheet(
             }
         }
 
-        Text(
-            text = strings.onboardingSubtitle,
-            style = MaterialTheme.typography.bodyMedium,
-            color = CalcTextSecondary
-        )
-
-        // Keep all onboarding inputs on the same 56dp baseline. On compact phones,
-        // display passwords one per row rather than shrinking labels into two lines.
-        OutlinedTextField(
-            value = spaceAlias,
-            onValueChange = { spaceAlias = it },
-            label = {
-                Text(strings.spaceDesignationLabel, maxLines = 1,
-                    overflow = TextOverflow.Ellipsis)
-            },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+        // Segmented mode toggle: Create New Space vs. Recover Existing Space
+        Surface(
+            color = VaultSurfaceElevated,
             shape = RoundedCornerShape(12.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-                .testTag("onboarding_alias_input"),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = VaultAccentPrimary,
-                unfocusedBorderColor = VaultBorderSubtle
-            )
-        )
+            border = BorderStroke(1.dp, VaultBorderSubtle),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                val tabs = listOf(
+                    0 to (if (zh) "创建新空间" else "Create Space"),
+                    1 to (if (zh) "恢复已有空间" else "Recover Space")
+                )
+                tabs.forEach { (tabIdx, label) ->
+                    val selected = activeTab == tabIdx
+                    Surface(
+                        onClick = {
+                            activeTab = tabIdx
+                            keyfilePickError = null
+                        },
+                        shape = RoundedCornerShape(9.dp),
+                        color = if (selected) VaultAccentPrimary else Color.Transparent,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag(if (tabIdx == 0) "onboarding_tab_create" else "onboarding_tab_recover")
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(vertical = 9.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = if (selected) Color(0xFF06202B) else CalcTextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
 
-        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            // The available width here excludes the sheet's horizontal padding.
-            // Large-font users also get full-width fields rather than ellipsized labels.
-            val stackFields = maxWidth < 320.dp || LocalDensity.current.fontScale >= 1.3f
-            if (stackFields) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OnboardingSequenceInput(
-                        sequence = sequence,
-                        onSequenceChange = { sequence = it },
-                        label = strings.triggerSequenceLabel,
-                        modifier = Modifier.fillMaxWidth().testTag("onboarding_pin_input")
+        if (activeTab == 0) {
+            Text(
+                text = strings.onboardingSubtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = CalcTextSecondary
+            )
+
+            // Keep all onboarding inputs on the same 56dp baseline. On compact phones,
+            // display passwords one per row rather than shrinking labels into two lines.
+            OutlinedTextField(
+                value = spaceAlias,
+                onValueChange = { spaceAlias = it.take(36) },
+                label = {
+                    Text(
+                        strings.spaceDesignationLabel,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    OnboardingSequenceInput(
-                        sequence = confirmSequence,
-                        onSequenceChange = { confirmSequence = it },
-                        label = strings.confirmSequenceLabel,
-                        modifier = Modifier.fillMaxWidth().testTag("onboarding_confirm_input")
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .testTag("onboarding_alias_input"),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = VaultAccentPrimary,
+                    unfocusedBorderColor = VaultBorderSubtle
+                )
+            )
+
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val stackFields = maxWidth < 320.dp || LocalDensity.current.fontScale >= 1.3f
+                if (stackFields) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OnboardingSequenceInput(
+                            sequence = sequence,
+                            onSequenceChange = { sequence = it },
+                            label = strings.triggerSequenceLabel,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("onboarding_pin_input")
+                        )
+                        OnboardingSequenceInput(
+                            sequence = confirmSequence,
+                            onSequenceChange = { confirmSequence = it },
+                            label = strings.confirmSequenceLabel,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("onboarding_confirm_input")
+                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        OnboardingSequenceInput(
+                            sequence = sequence,
+                            onSequenceChange = { sequence = it },
+                            label = strings.triggerSequenceLabel,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("onboarding_pin_input")
+                        )
+                        OnboardingSequenceInput(
+                            sequence = confirmSequence,
+                            onSequenceChange = { confirmSequence = it },
+                            label = strings.confirmSequenceLabel,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("onboarding_confirm_input")
+                        )
+                    }
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                OnboardingHintRow(
+                    good = VaultWizardRules.validSequence(sequence),
+                    text = if (zh) "6–64 位，同时包含数字与计算器符号（如 +-*/().）"
+                    else "6–64 chars combining digits and calculator symbols"
+                )
+                if (confirmSequence.isNotEmpty()) {
+                    OnboardingHintRow(
+                        good = VaultWizardRules.confirmedSequence(sequence, confirmSequence),
+                        text = if (zh) "两次输入的序列一致" else "Both entries match"
+                    )
+                }
+            }
+
+            KeyfilePickerCard(
+                selectedKeyfile = createKeyfile,
+                isHashing = isHashingCreateKeyfile,
+                errorText = keyfilePickError,
+                accent = VaultAccentPrimary,
+                title = if (zh) "绑定实体钥匙文件（Keyfile）" else "Bind Original Keyfile",
+                subtitle = if (zh) "点击选择任意非空原文件（防离线爆破必选）" else "Tap to choose any non-empty original file",
+                tipText = if (zh) "建议选 PDF / 压缩包 / 安装包 / 原图（避免微信等默认压缩）。本机用安全芯片封印，日常免重选。"
+                else "Prefer PDF / ZIP / APK / lossless audio or original unedited files. Sealed locally after setup.",
+                onRequestPickFile = { createKeyfileLauncher.launch(arrayOf("*/*")) },
+                tagPrefix = "onboarding_keyfile"
+            )
+
+            if (errorText != null) {
+                Text(
+                    text = errorText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CalcClearKeyText,
+                    modifier = Modifier.testTag("onboarding_error_text")
+                )
+            }
+
+            if (isProvisioning) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        color = VaultAccentPrimary,
+                        strokeWidth = 2.5.dp,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = strings.derivingKekProgress,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = VaultAccentPrimary
                     )
                 }
             } else {
-                Row(modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OnboardingSequenceInput(
-                        sequence = sequence,
-                        onSequenceChange = { sequence = it },
-                        label = strings.triggerSequenceLabel,
-                        modifier = Modifier.weight(1f).testTag("onboarding_pin_input")
-                    )
-                    OnboardingSequenceInput(
-                        sequence = confirmSequence,
-                        onSequenceChange = { confirmSequence = it },
-                        label = strings.confirmSequenceLabel,
-                        modifier = Modifier.weight(1f).testTag("onboarding_confirm_input")
-                    )
-                }
-            }
-        }
-
-        if (errorText != null) {
-            Text(
-                text = errorText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = CalcClearKeyText,
-                modifier = Modifier.testTag("onboarding_error_text")
-            )
-        }
-
-        if (isProvisioning) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                CircularProgressIndicator(
-                    color = VaultAccentPrimary,
-                    strokeWidth = 2.5.dp,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Text(
-                    text = strings.derivingKekProgress,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = VaultAccentPrimary
-                )
-            }
-        } else {
-            Button(
-                onClick = {
-                    onProvision(sequence, confirmSequence, spaceAlias, false)
-                },
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = VaultAccentPrimary,
-                    contentColor = Color(0xFF06202B)
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .testTag("onboarding_provision_button")
-            ) {
-                Text(
-                    text = strings.provisionPrimarySpaceBtn,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onRestoreArchive,
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, VaultBorderSubtle),
+                Button(
+                    onClick = {
+                        onProvision(sequence, confirmSequence, createKeyfile?.pepper, spaceAlias, false)
+                    },
+                    enabled = !isHashingCreateKeyfile,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = VaultAccentPrimary,
+                        contentColor = Color(0xFF06202B)
+                    ),
                     modifier = Modifier
-                        .weight(1f)
-                        .height(46.dp)
-                        .testTag("onboarding_restore_archive_button")
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("onboarding_provision_button")
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Restore,
-                        contentDescription = null,
-                        tint = VaultAccentPrimary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = strings.selfHealRestoreBtn,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = CalcTextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        text = strings.provisionPrimarySpaceBtn,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
                     )
                 }
 
@@ -1158,8 +1301,8 @@ internal fun FirstLaunchVaultSetupSheet(
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, VaultBorderSubtle),
                     modifier = Modifier
-                        .weight(1f)
-                        .height(46.dp)
+                        .fillMaxWidth()
+                        .height(44.dp)
                         .testTag("onboarding_skip_button")
                 ) {
                     Text(
@@ -1171,7 +1314,181 @@ internal fun FirstLaunchVaultSetupSheet(
                     )
                 }
             }
+        } else {
+            // Recover existing space tab (after uninstall/reinstall or migrating backup archive)
+            Surface(
+                color = if (unsealedRecoverableSpaces > 0) VaultEmeraldSuccess.copy(alpha = 0.12f)
+                else VaultSurfaceElevated,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(
+                    1.dp,
+                    if (unsealedRecoverableSpaces > 0) VaultEmeraldSuccess.copy(alpha = 0.45f)
+                    else VaultBorderSubtle
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = if (unsealedRecoverableSpaces > 0) {
+                        if (zh) {
+                            "检测到本机存有 $unsealedRecoverableSpaces 个待绑定空间容器。选择创建时绑定的原文件并输入原序列即可恢复。"
+                        } else {
+                            "Found $unsealedRecoverableSpaces unsealed space container(s) on device. Bind your original Keyfile + sequence to restore."
+                        }
+                    } else {
+                        if (zh) {
+                            "如果从旧手机迁移，可先导入 .zip 备份包，再绑定原文件（Keyfile）与解锁序列。"
+                        } else {
+                            "Migrating from another device? Import your .zip backup first, then verify your original Keyfile + sequence."
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (unsealedRecoverableSpaces > 0) VaultEmeraldSuccess else CalcTextSecondary,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+
+            OutlinedButton(
+                onClick = onRestoreArchive,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, VaultAccentPrimary.copy(alpha = 0.45f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .testTag("onboarding_restore_archive_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Archive,
+                    contentDescription = null,
+                    tint = VaultAccentPrimary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = strings.selfHealRestoreBtn,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = VaultAccentPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            KeyfilePickerCard(
+                selectedKeyfile = recoverKeyfile,
+                isHashing = isHashingRecoverKeyfile,
+                errorText = keyfilePickError,
+                accent = VaultEmeraldSuccess,
+                title = if (zh) "选择原钥匙文件（Keyfile）" else "Select Original Keyfile",
+                subtitle = if (zh) "必须与创建该空间时选择的原文件完全一致" else "Must match the exact unmodified original file",
+                tipText = if (zh) "验证成功后，本机将自动用安全芯片封印，此后日常仅需输算式解锁。"
+                else "Once verified, the Keyfile digest is sealed locally in Keystore for sequence-only daily unlock.",
+                onRequestPickFile = { recoverKeyfileLauncher.launch(arrayOf("*/*")) },
+                tagPrefix = "recover_keyfile"
+            )
+
+            OnboardingSequenceInput(
+                sequence = recoverSequence,
+                onSequenceChange = { recoverSequence = it },
+                label = if (zh) "原空间解锁序列" else "Original unlock sequence",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("onboarding_recover_pin_input")
+            )
+
+            if (recoveryError != null) {
+                Text(
+                    text = recoveryError,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = CalcClearKeyText,
+                    modifier = Modifier.testTag("onboarding_recovery_error")
+                )
+            }
+
+            if (isRecovering) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        color = VaultEmeraldSuccess,
+                        strokeWidth = 2.5.dp,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        text = if (zh) "正在验证隐形槽位并封印本机..." else "Verifying stealth slots & sealing...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = VaultEmeraldSuccess
+                    )
+                }
+            } else {
+                Button(
+                    onClick = { onRecoverSpace(recoverSequence, recoverKeyfile?.pepper) },
+                    enabled = !isHashingRecoverKeyfile,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = VaultEmeraldSuccess,
+                        contentColor = Color(0xFF07231A)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("onboarding_recover_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Restore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (zh) "验证并绑定到本机" else "Verify & Bind to Device",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onSkipToCalculator,
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, VaultBorderSubtle),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .testTag("onboarding_skip_button")
+                ) {
+                    Text(
+                        text = strings.useDisguisedCalcOnlyBtn,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = CalcTextSecondary,
+                        maxLines = 1
+                    )
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun OnboardingHintRow(good: Boolean, text: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            imageVector = if (good) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+            contentDescription = null,
+            tint = if (good) VaultEmeraldSuccess else CalcTextMuted,
+            modifier = Modifier.size(14.dp)
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (good) CalcTextSecondary else CalcTextMuted
+        )
     }
 }
 
@@ -1185,7 +1502,7 @@ private fun OnboardingSequenceInput(
 ) {
     OutlinedTextField(
         value = sequence,
-        onValueChange = onSequenceChange,
+        onValueChange = { onSequenceChange(it.take(64)) },
         visualTransformation = PasswordVisualTransformation(),
         label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         singleLine = true,

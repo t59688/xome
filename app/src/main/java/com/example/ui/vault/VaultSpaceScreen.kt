@@ -173,8 +173,10 @@ fun VaultSpaceScreen(
     onShredFile: (VaultFileEntity) -> Unit,
     onRenameFile: (VaultFileEntity, String) -> Unit,
     onChangeSequence: (String, String, String, (Boolean, String) -> Unit) -> Unit,
+    onRotateKeyfile: (String, ByteArray?, (Boolean, String) -> Unit) -> Unit,
     onVerifyCurrentSequence: (String, (Boolean) -> Unit) -> Unit,
-    onCreateDecoySpace: (String, String, String, Boolean, Boolean, Boolean, (Boolean, String) -> Unit) -> Unit,
+    onCreateDecoySpace: (String, String, ByteArray?, String, Boolean, Boolean, Boolean, (Boolean, String) -> Unit) -> Unit,
+    onExtractKeyfileDigest: suspend (android.net.Uri) -> Result<com.example.viewmodel.XomeViewModel.KeyfileSelection>,
     onExportSelfHealingArchive: (android.net.Uri) -> Unit,
     onImportSelfHealingArchive: (android.net.Uri) -> Unit,
     onLockVault: () -> Unit,
@@ -309,6 +311,16 @@ fun VaultSpaceScreen(
         if (uri != null) {
             onImportSelfHealingArchive(uri)
         }
+    }
+
+    var pendingKeyfileCallback by remember { mutableStateOf<((android.net.Uri?) -> Unit)?>(null) }
+    val keyfilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        onExternalActivityFinished()
+        val callback = pendingKeyfileCallback
+        pendingKeyfileCallback = null
+        callback?.invoke(uri)
     }
 
     Scaffold(
@@ -540,8 +552,18 @@ fun VaultSpaceScreen(
                     onToggleFlagSecure = onToggleFlagSecure,
                     onSelectLanguage = onSelectLanguage,
                     onChangeSequence = onChangeSequence,
+                    onRotateKeyfile = onRotateKeyfile,
                     onVerifyCurrentSequence = onVerifyCurrentSequence,
                     onCreateDecoySpace = onCreateDecoySpace,
+                    onExtractKeyfileDigest = onExtractKeyfileDigest,
+                    onLaunchKeyfilePicker = { onSelected ->
+                        pendingKeyfileCallback = onSelected
+                        keyfilePickerLauncher.launchWithVaultGuard(
+                            arrayOf("*/*"),
+                            onExternalActivityStarted,
+                            onExternalActivityFinished
+                        )
+                    },
                     onExportSelfHealingArchive = {
                         exportArchiveLauncher.launchWithVaultGuard(
                             "xome_backup_${session.spaceId}.zip",

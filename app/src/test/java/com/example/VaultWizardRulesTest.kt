@@ -14,12 +14,14 @@ class VaultWizardRulesTest {
         assertTrue(VaultWizardRules.validAlias(" Work "))
     }
 
-    @Test fun `unlock sequences support calculator expressions not only numeric digits`() {
-        assertFalse(VaultWizardRules.validSequence("123"))
-        assertFalse(VaultWizardRules.validSequence("x".repeat(17)))
-        assertFalse(VaultWizardRules.validSequence("12\n34"))
+    @Test fun `unlock sequences support calculator expressions and enforce 6 to 64 chars`() {
+        assertFalse(VaultWizardRules.validSequence("123+4"))
+        assertFalse(VaultWizardRules.validSequence("1".repeat(64) + "+"))
+        assertFalse(VaultWizardRules.validSequence("12\n34+"))
         assertTrue(VaultWizardRules.validSequence("9988+11"))
-        assertTrue(VaultWizardRules.validSequence("1".repeat(15) + "+"))
+        assertTrue(VaultWizardRules.validSequence("1".repeat(63) + "+"))
+        assertTrue(VaultWizardRules.validUnlockSequence("123+45"))
+        assertFalse(VaultWizardRules.validUnlockSequence("12345"))
     }
 
     @Test fun `confirmation must agree on normalized sequence`() {
@@ -27,14 +29,15 @@ class VaultWizardRulesTest {
         assertTrue(VaultWizardRules.confirmedSequence("12×345", "12*345"))
         assertTrue(VaultWizardRules.confirmedSequence("12÷345", "12/345"))
         assertTrue(VaultWizardRules.confirmedSequence("12−345", "12-345"))
-        assertFalse(VaultWizardRules.confirmedSequence("2580", "2581"))
+        assertFalse(VaultWizardRules.confirmedSequence("2580+1", "2580+2"))
         assertFalse(VaultWizardRules.confirmedSequence("", ""))
     }
 
     @Test fun `credential rotation requires old and new to differ`() {
-        assertFalse(VaultWizardRules.changedSequence("1314", "1314", "1314"))
-        assertFalse(VaultWizardRules.changedSequence("1314", "7788", "1234"))
-        assertTrue(VaultWizardRules.changedSequence("1314", "7788+1", "7788+1"))
+        assertFalse(VaultWizardRules.changedSequence("1314+2", "1314+2", "1314+2"))
+        assertFalse(VaultWizardRules.changedSequence("1314+2", "7788+1", "1234+5"))
+        assertFalse(VaultWizardRules.changedSequence("1314", "7788+1", "7788+1"))
+        assertTrue(VaultWizardRules.changedSequence("1314+2", "7788+1", "7788+1"))
     }
 
     @Test fun newCredentialsRequireSixCharactersWithDigitsAndCalculatorSymbols() {

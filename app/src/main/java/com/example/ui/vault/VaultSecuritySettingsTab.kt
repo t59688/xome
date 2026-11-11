@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddModerator
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -77,6 +78,7 @@ import com.example.ui.theme.VaultPurpleDecoy
 import com.example.ui.theme.VaultSurface
 import com.example.ui.theme.VaultSurfaceElevated
 import com.example.update.UpdateRepository
+import com.example.viewmodel.XomeViewModel
 
 @Composable
 fun VaultSecuritySettingsTab(
@@ -92,8 +94,11 @@ fun VaultSecuritySettingsTab(
     onToggleFlagSecure: (Boolean) -> Unit,
     onSelectLanguage: (AppLanguage) -> Unit,
     onChangeSequence: (oldSeq: String, newSeq: String, confirmSeq: String, cb: (Boolean, String) -> Unit) -> Unit,
+    onRotateKeyfile: (currentSeq: String, newPepper: ByteArray?, cb: (Boolean, String) -> Unit) -> Unit,
     onVerifyCurrentSequence: (String, (Boolean) -> Unit) -> Unit,
-    onCreateDecoySpace: (seq: String, confirmSeq: String, alias: String, isDecoy: Boolean, seedFiles: Boolean, switchNow: Boolean, cb: (Boolean, String) -> Unit) -> Unit,
+    onCreateDecoySpace: (seq: String, confirmSeq: String, keyfilePepper: ByteArray?, alias: String, isDecoy: Boolean, seedFiles: Boolean, switchNow: Boolean, cb: (Boolean, String) -> Unit) -> Unit,
+    onExtractKeyfileDigest: suspend (android.net.Uri) -> Result<XomeViewModel.KeyfileSelection>,
+    onLaunchKeyfilePicker: ((android.net.Uri?) -> Unit) -> Unit,
     onExportSelfHealingArchive: () -> Unit,
     onImportSelfHealingArchive: () -> Unit,
     modifier: Modifier = Modifier
@@ -103,6 +108,7 @@ fun VaultSecuritySettingsTab(
     // Sensitive wizard inputs are ephemeral and never persisted through rememberSaveable.
     var showCreateWizard by remember { mutableStateOf(false) }
     var showChangeWizard by remember { mutableStateOf(false) }
+    var showRotateKeyfileWizard by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -146,6 +152,14 @@ fun VaultSecuritySettingsTab(
             accent = VaultAccentPrimary,
             tag = "change_pin_submit_button",
             onClick = { showChangeWizard = true }
+        )
+        VaultWizardEntry(
+            title = strings.rotateKeyfileTitle,
+            subtitle = strings.rotateKeyfileSubtitle,
+            icon = Icons.Default.AttachFile,
+            accent = VaultEmeraldSuccess,
+            tag = "rotate_keyfile_button",
+            onClick = { showRotateKeyfileWizard = true }
         )
 
         // 5. Backup & Restore Card (Clean single-line buttons that never wrap)
@@ -248,6 +262,8 @@ fun VaultSecuritySettingsTab(
     if (showCreateWizard) {
         CreateIndependentSpaceWizard(
             initialAlias = strings.defaultDecoySpaceAlias,
+            onExtractKeyfileDigest = onExtractKeyfileDigest,
+            onLaunchKeyfilePicker = onLaunchKeyfilePicker,
             onCreate = onCreateDecoySpace,
             onClose = { showCreateWizard = false }
         )
@@ -257,6 +273,15 @@ fun VaultSecuritySettingsTab(
             onVerify = onVerifyCurrentSequence,
             onChange = onChangeSequence,
             onClose = { showChangeWizard = false }
+        )
+    }
+    if (showRotateKeyfileWizard) {
+        RotateKeyfileWizard(
+            onVerify = onVerifyCurrentSequence,
+            onExtractKeyfileDigest = onExtractKeyfileDigest,
+            onLaunchKeyfilePicker = onLaunchKeyfilePicker,
+            onRotateKeyfile = onRotateKeyfile,
+            onClose = { showRotateKeyfileWizard = false }
         )
     }
 }
@@ -397,7 +422,7 @@ private fun SpaceOverviewCard(
 ) {
     val strings = LocalAppStrings.current
     var showTechnicalDetails by rememberSaveable { mutableStateOf(false) }
-    val info = session.headerInfo
+    val profile = session.kdfProfile
 
     Surface(
         color = VaultSurface,
@@ -475,9 +500,10 @@ private fun SpaceOverviewCard(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Space ID : ${session.spaceId}.header (128B)\n" +
-                            "KDF      : Argon2id (${info.memoryCostKb / 1024}MB, t=${info.timeCost}, p=${info.parallelism})\n" +
-                            "Cipher   : AES-256-GCM + SQLCipher",
+                        text = "Container : ${session.spaceId}.dat (8,208 B · 64 chaff slots · magic-free)\n" +
+                            "Keyfile   : 256-bit zero-fingerprint digest (Keystore-sealed)\n" +
+                            "KDF       : Argon2id (${profile.memoryCostKb / 1024} MiB, t=${profile.timeCost}, p=${profile.parallelism}) + HMAC\n" +
+                            "Cipher    : Magic-free AES-256-GCM (64KB) + SQLCipher",
                         fontFamily = JetBrainsMonoFamily,
                         fontSize = 11.sp,
                         lineHeight = 16.sp,

@@ -1,7 +1,12 @@
 package com.example.crypto
 
-/** New secrets must be reproducible using the calculator keypad; old vaults remain unlockable. */
+/**
+ * Unlock sequences are reproducible calculator expressions (6..64 chars).
+ * Extended length lets users combine multi-step expressions alongside the Keyfile pepper.
+ */
 object VaultSequencePolicy {
+    const val MIN_LENGTH = 6
+    const val MAX_LENGTH = 64
     private const val SYMBOLS = "+-*/().%^!−×÷"
 
     fun normalize(value: String): String = value.trim()
@@ -9,11 +14,12 @@ object VaultSequencePolicy {
 
     fun isValidNewSequence(value: CharSequence): Boolean {
         val sequence = value.trim()
-        return sequence.length in 6..16 &&
-            sequence.any { it in '0'..'9' } && sequence.any { it in SYMBOLS } &&
+        return sequence.length in MIN_LENGTH..MAX_LENGTH &&
+            sequence.any { it in '0'..'9' } &&
+            sequence.any { it in SYMBOLS } &&
             sequence.all { it in '0'..'9' || it in SYMBOLS }
     }
 
-    fun isValidLegacySequence(value: CharSequence): Boolean =
-        value.trim().let { it.length in 4..16 && it.none(Char::isISOControl) }
+    fun isValidUnlockCandidate(value: CharSequence): Boolean =
+        value.trim().let { it.length in MIN_LENGTH..MAX_LENGTH && it.none(Char::isISOControl) }
 }
