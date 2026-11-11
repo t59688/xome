@@ -203,6 +203,7 @@ fun XomeRootHost(
     val folders by viewModel.currentFolders.collectAsStateWithLifecycle()
     val files by viewModel.currentFiles.collectAsStateWithLifecycle()
     val breadcrumbs by viewModel.folderBreadcrumbs.collectAsStateWithLifecycle()
+    val allSpaceFolders by viewModel.allSpaceFolders.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val totalFilesCount by viewModel.totalFileCount.collectAsStateWithLifecycle()
     val totalPlainBytes by viewModel.totalPlainBytes.collectAsStateWithLifecycle()
@@ -276,6 +277,7 @@ fun XomeRootHost(
                             folders = folders,
                             files = files,
                             breadcrumbs = breadcrumbs,
+                            allFolders = allSpaceFolders,
                             searchQuery = searchQuery,
                             totalSpacesCount = totalSpaces,
                             totalFilesCount = totalFilesCount,
@@ -297,6 +299,7 @@ fun XomeRootHost(
                             onNavigateUp = viewModel::navigateUpFolder,
                             onSearchQueryChange = viewModel::updateSearchQuery,
                             onCreateFolder = viewModel::createNewFolder,
+                            onRenameFolder = viewModel::renameFolder,
                             onDeleteFolder = viewModel::deleteFolder,
                             onImportUris = viewModel::importSelectedUris,
                             onConfirmDeleteOriginals = viewModel::confirmDeleteOriginalFiles,
@@ -305,7 +308,11 @@ fun XomeRootHost(
                             onCreateEncryptedNote = viewModel::createNewEncryptedNote,
                             onOpenFileViewer = viewModel::openFileInMemoryViewer,
                             onExportFileToPublic = viewModel::exportFileToPublicStorage,
+                            onExportFilesToPublic = viewModel::exportFilesToPublicStorage,
+                            onCopyFiles = viewModel::copyFilesToFolder,
+                            onMoveFiles = viewModel::moveFilesToFolder,
                             onShredFile = viewModel::shredVaultFile,
+                            onShredFiles = viewModel::shredVaultFiles,
                             onRenameFile = viewModel::renameVaultFile,
                             onChangeSequence = viewModel::changeCurrentSpaceSequence,
                             onRotateKeyfile = viewModel::rotateCurrentSpaceKeyfile,

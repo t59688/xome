@@ -18,6 +18,9 @@ interface VaultDao {
     @Query("SELECT * FROM vault_folders WHERE id = :folderId LIMIT 1")
     suspend fun getFolderById(folderId: Long): VaultFolderEntity?
 
+    @Query("SELECT * FROM vault_folders WHERE parent_id = :parentId ORDER BY folder_name ASC")
+    suspend fun getSubfoldersSync(parentId: Long): List<VaultFolderEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertFolder(folder: VaultFolderEntity): Long
 
@@ -36,6 +39,9 @@ interface VaultDao {
     @Query("SELECT * FROM vault_files WHERE folder_id = :folderId")
     suspend fun getFilesInFolderSync(folderId: Long): List<VaultFileEntity>
 
+    @Query("SELECT * FROM vault_files WHERE folder_id IS NULL")
+    suspend fun getFilesInRootSync(): List<VaultFileEntity>
+
     @Query("SELECT * FROM vault_files WHERE id = :fileId LIMIT 1")
     suspend fun getFileById(fileId: Long): VaultFileEntity?
 
@@ -47,6 +53,9 @@ interface VaultDao {
 
     @Query("UPDATE vault_files SET folder_id = :targetFolderId WHERE id = :fileId")
     suspend fun moveFileToFolder(fileId: Long, targetFolderId: Long?)
+
+    @Query("UPDATE vault_files SET original_name = :newName, folder_id = :targetFolderId WHERE id = :fileId")
+    suspend fun updateFileNameAndFolder(fileId: Long, newName: String, targetFolderId: Long?)
 
     @Query("DELETE FROM vault_files WHERE id = :fileId")
     suspend fun deleteFileById(fileId: Long)

@@ -38,15 +38,15 @@
 * **诱导/胁迫空间（Duress / Decoy Vault）**：支持设置诱导解锁序列。在面临强制检查时，输入诱导序列仅打开包含预设常规内容的次级空间，真实敏感空间在磁盘上呈现为随机数据，不可探测。
 * **分步安全向导**：提供独立的“新建独立空间”与“修改解锁密码”专注向导，一次只做一个决策，内存安全隔离，关闭即销毁输入。
 
-### 3. 零重加密极速改密 (Zero Re-encryption Sequence Rotation)
+### 3. 零重加密改密 (Zero Re-encryption Sequence Rotation)
 * 传统加密软件修改密码需要将全部 GB 级文件重新解密并加密，既耗时又有断电损坏风险。
 * Xome 采用**信封加密架构**：每个文件由随机 DEK 加密，DEK 由空间 MasterKey 加密，而 MasterKey 由用户序列派生的 KEK 加密并存于 128 字节头部。
 * 修改解锁序列时，**仅需重新派生 KEK 并原子替换 128 字节空间头**，毫秒级完成，底层海量数据文件与 SQLite 数据库无需重新加密。
 
 ### 4. 纯内存流式解密与零临时文件 (Zero-Tempfile & In-Memory Viewer)
-* **杜绝磁盘明文泄露**：不在 `/cache`、`/tmp` 或外部存储生成任何明文解密临时文件。
+* **避免磁盘明文泄露**：不在 `/cache`、`/tmp` 或外部存储生成任何明文解密临时文件。
 * **流式解密通道**：基于 `RandomAccessDecryptedStream` 实现分块即时解密，大图片、长文档、媒体文件按需解密进内存，读取完毕由垃圾回收与主动填充归还。
-* **内存安全生命周期**：所有敏感密钥（MasterKey、DEK、PIN 序列）严格使用 `ByteArray` / `CharArray` 承载，使用完毕后立即显式调用 `Arrays.fill(..., 0)` 抹除，防止内存 Dump 分析。
+* **内存安全生命周期**：所有敏感密钥（MasterKey、DEK、PIN 序列）使用 `ByteArray` / `CharArray` 承载，使用完毕后立即显式调用 `Arrays.fill(..., 0)` 抹除，防止内存 Dump 分析。
 
 ### 5. 安全防御与自愈能力 (System Hardening & Self-Healing)
 * **防截屏与录屏（FLAG_SECURE）**：进入私密空间后，系统强制开启 `FLAG_SECURE`，阻断截图、ADB 录屏、多任务最近任务（Recent Tasks）缩略图快照。
@@ -155,7 +155,7 @@ flowchart TD
 
 ## 原件删除与数据安全保障 (Source Deletion & Zero-Data-Loss)
 
-当在导入文件时启用 **“删除原件”** 选项时，Xome 严格遵循**零数据丢失优先法则（At-Least-Once Persistence）**：
+当在导入文件时启用 **“删除原件”** 选项时，Xome 遵循**零数据丢失优先（At-Least-Once Persistence）**：
 
 1. **顺序**：
    - 必须先完成：① 内存缩略图生成 -> ② 64KB AES-GCM 分块加密并完整刷入磁盘 -> ③ SQLCipher 数据库事务提交；
