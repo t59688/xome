@@ -66,6 +66,21 @@ class GraphStudioUiTest {
         compose.onNodeWithTag("graph_formula_0").assertTextContains("sin(", substring = true)
     }
 
+    @Test fun compactCategoryModeAndPresetControlsRemainInteractive() {
+        compose.setContent { MyApplicationTheme { GraphStudioScreen(onClose = {}) } }
+        compose.onNodeWithTag("graph_mode_POLAR").performClick()
+        // Use a static preset in Compose tests; animated presets intentionally
+        // keep requesting frames and therefore never reach Espresso's idle state.
+        compose.onNodeWithTag("graph_preset_1").performClick()
+        compose.onNodeWithTag("graph_category_WAVE").performClick()
+        compose.onNodeWithTag("graph_preset_0").assertExists()
+        compose.onNodeWithTag("graph_category_3D").performClick()
+        compose.onNodeWithTag("graph_preset_2").performClick()
+        compose.onNodeWithTag("graph_mode_SPACE_CURVE").performClick()
+        compose.onNodeWithTag("graph_category_2D").performClick()
+        compose.onNodeWithTag("graph_mode_CARTESIAN").assertExists()
+    }
+
     @Test fun fullscreenHidesEditorAndRestoresItOnExit() {
         compose.setContent {
             MyApplicationTheme { GraphStudioScreen(onClose = {}) }

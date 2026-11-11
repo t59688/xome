@@ -265,10 +265,10 @@ fun GraphStudioScreen(onClose: () -> Unit) {
                 shape = RoundedCornerShape(12.dp),
                 color = CalcDisplayBg,
                 modifier = Modifier.fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 2.dp)
+                    .padding(horizontal = 14.dp)
                     .testTag("graph_category_switch")
             ) {
-                Row(modifier = Modifier.padding(3.dp)) {
+                Row(modifier = Modifier.padding(2.dp)) {
                     listOf(
                         "2D" to (if (zh) "2D 曲线" else "2D Curves"),
                         "WAVE" to (if (zh) "动态波形" else "Waves"),
@@ -276,38 +276,40 @@ fun GraphStudioScreen(onClose: () -> Unit) {
                     ).forEach { (cat, label) ->
                         val active = currentCategory == cat
                         val tabColor by animateColorAsState(
-                            targetValue = if (active) CalcAccentCopper else Color.Transparent,
+                            targetValue = if (active) CalcAccentCopper.copy(alpha = .18f)
+                                else Color.Transparent,
                             animationSpec = tween(160),
                             label = "graph_category_$cat"
                         )
-                        Surface(
-                            onClick = {
-                                if (!active) {
-                                    currentCategory = cat
-                                    mode = when (cat) {
-                                        "WAVE" -> GraphPresets.modesWave.first()
-                                        "3D" -> GraphPresets.modes3D.first()
-                                        else -> GraphPresets.modes2D.first()
+                        Box(
+                            modifier = Modifier.weight(1f).height(42.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(tabColor)
+                                .clickable {
+                                    if (!active) {
+                                        currentCategory = cat
+                                        mode = when (cat) {
+                                            "WAVE" -> GraphPresets.modesWave.first()
+                                            "3D" -> GraphPresets.modes3D.first()
+                                            else -> GraphPresets.modes2D.first()
+                                        }
+                                        selectedPreset = GraphPresets.forMode(mode).firstOrNull {
+                                            it.expressions == drafts[mode]
+                                        }
+                                        playing = false
+                                        showMathInsight = false
                                     }
-                                    selectedPreset = GraphPresets.forMode(mode).firstOrNull {
-                                        it.expressions == drafts[mode]
-                                    }
-                                    playing = false
-                                    showMathInsight = false
                                 }
-                            },
-                            shape = RoundedCornerShape(9.dp),
-                            color = tabColor,
-                            modifier = Modifier.weight(1f).testTag("graph_category_" + cat)
+                                .testTag("graph_category_" + cat),
+                            contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 label,
-                                color = if (active) CalcChassisBg else CalcTextSecondary,
+                                color = if (active) CalcAccentCopper else CalcTextSecondary,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                                 fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
                                 style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.fillMaxWidth()
-                                    .padding(horizontal = 4.dp, vertical = 10.dp)
+                                maxLines = 1
                             )
                         }
                     }
@@ -323,8 +325,8 @@ fun GraphStudioScreen(onClose: () -> Unit) {
             if (subModes.size > 1) {
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
-                        .padding(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 3.dp),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        .padding(start = 14.dp, end = 14.dp, top = 1.dp, bottom = 0.dp),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
                     subModes.forEach { option ->
                         GraphChoice(
@@ -475,45 +477,44 @@ fun GraphStudioScreen(onClose: () -> Unit) {
             // The editor stays compact by default so the drawing remains the primary surface.
             Column(
                 modifier = Modifier.fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 3.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 if (!keyboardVisible) {
                     Row(
                         modifier = Modifier.fillMaxWidth()
                             .horizontalScroll(rememberScrollState())
                             .testTag("graph_presets_strip"),
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             if (zh) "预设" else "Presets",
                             color = CalcTextMuted,
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier.padding(end = 3.dp)
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(end = 1.dp)
                         )
                         GraphPresets.forMode(mode).forEachIndexed { idx, preset ->
                             val active = selectedPreset?.nameEn == preset.nameEn
-                            Surface(
-                                onClick = {
-                                    selectedPreset = preset
-                                    drafts[mode] = preset.expressions
-                                    parameter = preset.parameter
-                                    time = 0f
-                                    playing = preset.animate
-                                },
-                                shape = RoundedCornerShape(9.dp),
-                                color = if (active) CalcAccentCopper.copy(alpha = .18f)
-                                    else CalcDisplayBg,
-                                border = androidx.compose.foundation.BorderStroke(
-                                    1.dp,
-                                    if (active) CalcAccentCopper.copy(alpha = .6f)
-                                    else CalcDisplayBorder
-                                ),
-                                modifier = Modifier.testTag("graph_preset_" + idx)
+                            Box(
+                                modifier = Modifier.height(40.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (active) CalcAccentCopper.copy(alpha = .13f)
+                                        else CalcDisplayBg
+                                    )
+                                    .clickable {
+                                        selectedPreset = preset
+                                        drafts[mode] = preset.expressions
+                                        parameter = preset.parameter
+                                        time = 0f
+                                        playing = preset.animate
+                                    }
+                                    .padding(horizontal = 10.dp)
+                                    .testTag("graph_preset_" + idx),
+                                contentAlignment = Alignment.Center
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(5.dp)
                                 ) {
@@ -529,7 +530,8 @@ fun GraphStudioScreen(onClose: () -> Unit) {
                                         style = MaterialTheme.typography.bodySmall,
                                         fontWeight = if (active) FontWeight.SemiBold
                                             else FontWeight.Normal,
-                                        color = if (active) CalcAccentCopper else CalcTextSecondary
+                                        color = if (active) CalcAccentCopper else CalcTextSecondary,
+                                        maxLines = 1
                                     )
                                 }
                             }
@@ -847,20 +849,23 @@ private fun GraphParameterControl(
 
 @Composable
 private fun GraphChoice(label: String, selected: Boolean, onClick: () -> Unit, tag: String) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(10.dp),
-        color = if (selected) CalcAccentCopper.copy(alpha = .18f) else Color.Transparent,
-        border = if (selected) androidx.compose.foundation.BorderStroke(1.dp, CalcAccentCopper.copy(alpha = .8f))
-        else androidx.compose.foundation.BorderStroke(1.dp, CalcDisplayBorder),
-        modifier = Modifier.testTag(tag)
+    // A compact text tab. Explicit height avoids Material3 Surface's automatic
+    // 48dp minimum being added again for this secondary navigation row.
+    Box(
+        modifier = Modifier.height(40.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) CalcAccentCopper.copy(alpha = .13f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 11.dp)
+            .testTag(tag),
+        contentAlignment = Alignment.Center
     ) {
         Text(
             text = label,
             color = if (selected) CalcAccentCopper else CalcTextSecondary,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+            maxLines = 1
         )
     }
 }
