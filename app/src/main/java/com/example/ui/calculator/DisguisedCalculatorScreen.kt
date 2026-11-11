@@ -13,8 +13,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -42,7 +44,6 @@ import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Functions
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SecurityUpdateGood
@@ -80,10 +81,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -912,7 +916,7 @@ private fun TactileCalcKey(
 }
 
 @Composable
-private fun FirstLaunchVaultSetupSheet(
+internal fun FirstLaunchVaultSetupSheet(
     isProvisioning: Boolean,
     errorText: String?,
     onProvision: (pin: String, confirm: String, alias: String, stayInCalc: Boolean) -> Unit,
@@ -988,13 +992,21 @@ private fun FirstLaunchVaultSetupSheet(
             color = CalcTextSecondary
         )
 
+        // Keep all onboarding inputs on the same 56dp baseline. On compact phones,
+        // display passwords one per row rather than shrinking labels into two lines.
         OutlinedTextField(
             value = spaceAlias,
             onValueChange = { spaceAlias = it },
-            label = { Text(strings.spaceDesignationLabel) },
+            label = {
+                Text(strings.spaceDesignationLabel, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+            },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
+                .height(56.dp)
                 .testTag("onboarding_alias_input"),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = VaultAccentPrimary,
@@ -1002,45 +1014,42 @@ private fun FirstLaunchVaultSetupSheet(
             )
         )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            OutlinedTextField(
-                value = sequence,
-                onValueChange = { sequence = it },
-                visualTransformation = PasswordVisualTransformation(),
-                label = { Text(strings.triggerSequenceLabel) },
-                leadingIcon = {
-                    Icon(Icons.Default.Key, contentDescription = null, tint = CalcAccentCopper)
-                },
-                singleLine = true,
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("onboarding_pin_input"),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = CalcAccentCopper,
-                    unfocusedBorderColor = VaultBorderSubtle
-                )
-            )
-
-            OutlinedTextField(
-                value = confirmSequence,
-                onValueChange = { confirmSequence = it },
-                visualTransformation = PasswordVisualTransformation(),
-                label = { Text(strings.confirmSequenceLabel) },
-                leadingIcon = {
-                    Icon(Icons.Default.Lock, contentDescription = null, tint = VaultAccentPrimary)
-                },
-                singleLine = true,
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("onboarding_confirm_input"),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = VaultAccentPrimary,
-                    unfocusedBorderColor = VaultBorderSubtle
-                )
-            )
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            // The available width here excludes the sheet's horizontal padding.
+            // Large-font users also get full-width fields rather than ellipsized labels.
+            val stackFields = maxWidth < 320.dp || LocalDensity.current.fontScale >= 1.3f
+            if (stackFields) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OnboardingSequenceInput(
+                        sequence = sequence,
+                        onSequenceChange = { sequence = it },
+                        label = strings.triggerSequenceLabel,
+                        modifier = Modifier.fillMaxWidth().testTag("onboarding_pin_input")
+                    )
+                    OnboardingSequenceInput(
+                        sequence = confirmSequence,
+                        onSequenceChange = { confirmSequence = it },
+                        label = strings.confirmSequenceLabel,
+                        modifier = Modifier.fillMaxWidth().testTag("onboarding_confirm_input")
+                    )
+                }
+            } else {
+                Row(modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OnboardingSequenceInput(
+                        sequence = sequence,
+                        onSequenceChange = { sequence = it },
+                        label = strings.triggerSequenceLabel,
+                        modifier = Modifier.weight(1f).testTag("onboarding_pin_input")
+                    )
+                    OnboardingSequenceInput(
+                        sequence = confirmSequence,
+                        onSequenceChange = { confirmSequence = it },
+                        label = strings.confirmSequenceLabel,
+                        modifier = Modifier.weight(1f).testTag("onboarding_confirm_input")
+                    )
+                }
+            }
         }
 
         if (errorText != null) {
@@ -1144,4 +1153,31 @@ private fun FirstLaunchVaultSetupSheet(
             }
         }
     }
+}
+
+/** The two credential inputs share exactly the same field geometry and semantics. */
+@Composable
+private fun OnboardingSequenceInput(
+    sequence: String,
+    onSequenceChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier
+) {
+    OutlinedTextField(
+        value = sequence,
+        onValueChange = onSequenceChange,
+        visualTransformation = PasswordVisualTransformation(),
+        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Password,
+            imeAction = ImeAction.Next
+        ),
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier.height(56.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = CalcAccentCopper,
+            unfocusedBorderColor = VaultBorderSubtle
+        )
+    )
 }
