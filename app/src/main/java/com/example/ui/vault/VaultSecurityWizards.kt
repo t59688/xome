@@ -745,7 +745,7 @@ private fun WizardField(
     OutlinedTextField(
         value = value,
         onValueChange = { onChange(it.take(64)) },
-        label = { Text(label) },
+        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         visualTransformation = if (secret && !reveal) PasswordVisualTransformation()
             else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(
@@ -772,7 +772,7 @@ private fun WizardField(
             cursorColor = accent
         ),
         shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth().testTag(tag)
+        modifier = Modifier.fillMaxWidth().height(56.dp).testTag(tag)
     )
 }
 
