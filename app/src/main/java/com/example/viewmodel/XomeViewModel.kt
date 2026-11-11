@@ -200,6 +200,12 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    val allSpaceFolders: StateFlow<List<VaultFolderEntity>> = activeSession
+        .flatMapLatest { session ->
+            session?.database?.vaultDao()?.observeAllFolders() ?: flowOf(emptyList())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val currentFolders: StateFlow<List<VaultFolderEntity>> = combine(
         activeSession,
         _currentFolderId,
@@ -752,17 +758,26 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteFolder(folder: VaultFolderEntity) {
+        if (activeSession.value == null) return
+        viewModelScope.launch {
+            val deletedIds = VaultStorageManager.deleteFolderRecursive(appContext, folder)
+            clearViewersIfDeleted(deletedIds)
+            showBanner(
+                if (isZh()) "已彻底删除文件夹「${folder.folderName}」"
+                else "Deleted folder \"${folder.folderName}\""
+            )
+        }
+    }
+
+    fun renameFolder(folder: VaultFolderEntity, newName: String) {
+        val clean = newName.trim()
+        if (clean.isEmpty() || clean == folder.folderName) return
         val session = activeSession.value ?: return
         viewModelScope.launch {
-            val dao = session.database.vaultDao()
-            val filesInside = dao.getFilesInFolderSync(folder.id)
-            filesInside.forEach { file ->
-                VaultStorageManager.shredVaultFile(appContext, file)
-            }
-            dao.deleteFolderById(folder.id)
+            session.database.vaultDao().renameFolder(folder.id, clean)
             showBanner(
-                if (isZh()) "已删除文件夹「${folder.folderName}」"
-                else "Deleted folder \"${folder.folderName}\""
+                if (isZh()) "已将文件夹重命名为「$clean」"
+                else "Renamed folder to \"$clean\""
             )
         }
     }
@@ -939,30 +954,96 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun clearViewersIfDeleted(deletedIds: Set<Long>) {
+        if (_activeImageViewerFileId.value != null && _activeImageViewerFileId.value in deletedIds) {
+            _activeImageViewerFileId.value = null
+        }
+        val activeDoc = _activeDocumentViewerFile.value
+        if (activeDoc != null && activeDoc.id in deletedIds) {
+            _activeDocumentViewerFile.value = null
+            _decryptedDocumentText.value = null
+        }
+    }
+
     fun shredVaultFile(fileEntity: VaultFileEntity) {
+        shredVaultFiles(listOf(fileEntity))
+    }
+
+    fun shredVaultFiles(files: List<VaultFileEntity>) {
+        if (files.isEmpty()) return
         viewModelScope.launch {
-            VaultStorageManager.shredVaultFile(appContext, fileEntity)
-            if (_activeImageViewerFileId.value == fileEntity.id) {
-                _activeImageViewerFileId.value = null
-            }
-            if (_activeDocumentViewerFile.value?.id == fileEntity.id) {
-                _activeDocumentViewerFile.value = null
-                _decryptedDocumentText.value = null
-            }
+            val deletedIds = VaultStorageManager.shredVaultFiles(appContext, files)
+            clearViewersIfDeleted(deletedIds)
             showBanner(
-                if (isZh()) "已彻底删除「${fileEntity.originalName}」"
-                else "Deleted \"${fileEntity.originalName}\""
+                if (files.size == 1) {
+                    val name = files.first().originalName
+                    if (isZh()) "已彻底删除「$name」" else "Deleted \"$name\""
+                } else {
+                    if (isZh()) "已彻底删除 ${deletedIds.size} 个文件"
+                    else "Deleted ${deletedIds.size} file(s)"
+                }
             )
         }
     }
 
     fun renameVaultFile(fileEntity: VaultFileEntity, newName: String) {
         val clean = newName.trim()
-        if (clean.isEmpty()) return
+        if (clean.isEmpty() || clean == fileEntity.originalName) return
         val session = activeSession.value ?: return
         viewModelScope.launch {
             session.database.vaultDao().renameFile(fileEntity.id, clean)
             showBanner(if (isZh()) "已重命名为「$clean」" else "Renamed to \"$clean\"")
+        }
+    }
+
+    fun copyFilesToFolder(files: List<VaultFileEntity>, targetFolderId: Long?) {
+        if (files.isEmpty()) return
+        val session = activeSession.value ?: return
+        viewModelScope.launch {
+            val targetName = if (targetFolderId == null) {
+                if (isZh()) "根目录" else "Root"
+            } else {
+                session.database.vaultDao().getFolderById(targetFolderId)?.folderName
+                    ?: (if (isZh()) "目标文件夹" else "Target Folder")
+            }
+            val summary = VaultStorageManager.copyVaultFilesToFolder(appContext, files, targetFolderId)
+            val hasError = summary.succeeded == 0 && summary.failed > 0
+            val msg = when {
+                summary.failed == 0 -> {
+                    if (isZh()) "已复制 ${summary.succeeded} 个文件到「$targetName」"
+                    else "Copied ${summary.succeeded} file(s) to \"$targetName\""
+                }
+                else -> {
+                    if (isZh()) "已复制 ${summary.succeeded} 个文件，${summary.failed} 个失败"
+                    else "Copied ${summary.succeeded} file(s), ${summary.failed} failed"
+                }
+            }
+            showBanner(msg, isError = hasError)
+        }
+    }
+
+    fun moveFilesToFolder(files: List<VaultFileEntity>, targetFolderId: Long?) {
+        if (files.isEmpty()) return
+        val session = activeSession.value ?: return
+        viewModelScope.launch {
+            val targetName = if (targetFolderId == null) {
+                if (isZh()) "根目录" else "Root"
+            } else {
+                session.database.vaultDao().getFolderById(targetFolderId)?.folderName
+                    ?: (if (isZh()) "目标文件夹" else "Target Folder")
+            }
+            val summary = VaultStorageManager.moveVaultFilesToFolder(files, targetFolderId)
+            val msg = when {
+                summary.succeeded == 0 && summary.skipped > 0 -> {
+                    if (isZh()) "所选文件已在「$targetName」中"
+                    else "Selected file(s) are already in \"$targetName\""
+                }
+                else -> {
+                    if (isZh()) "已移动 ${summary.succeeded} 个文件到「$targetName」"
+                    else "Moved ${summary.succeeded} file(s) to \"$targetName\""
+                }
+            }
+            showBanner(msg)
         }
     }
 
@@ -981,23 +1062,37 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun exportFileToPublicStorage(fileEntity: VaultFileEntity) {
+        exportFilesToPublicStorage(listOf(fileEntity))
+    }
+
+    fun exportFilesToPublicStorage(files: List<VaultFileEntity>) {
+        if (files.isEmpty()) return
         viewModelScope.launch {
-            val res = VaultStorageManager.exportEncryptedFileToPublicDownloads(appContext, fileEntity)
-            res.fold(
-                onSuccess = { path ->
-                    showBanner(
-                        if (isZh()) "已导出至 $path"
-                        else "Exported to $path"
-                    )
-                },
-                onFailure = { err ->
-                    showBanner(
-                        if (isZh()) "导出失败: ${err.message}"
-                        else "Export failed: ${err.message}",
-                        isError = true
-                    )
+            if (files.size == 1) {
+                val res = VaultStorageManager.exportEncryptedFileToPublicDownloads(appContext, files.first())
+                res.fold(
+                    onSuccess = { path ->
+                        showBanner(if (isZh()) "已导出至 $path" else "Exported to $path")
+                    },
+                    onFailure = { err ->
+                        showBanner(
+                            if (isZh()) "导出失败: ${err.message}" else "Export failed: ${err.message}",
+                            isError = true
+                        )
+                    }
+                )
+            } else {
+                val summary = VaultStorageManager.exportEncryptedFilesToPublicDownloads(appContext, files)
+                val hasError = summary.succeeded == 0 && summary.failed > 0
+                val msg = if (summary.failed == 0) {
+                    if (isZh()) "已导出 ${summary.succeeded} 个文件至 Downloads/XomeExport"
+                    else "Exported ${summary.succeeded} file(s) to Downloads/XomeExport"
+                } else {
+                    if (isZh()) "已导出 ${summary.succeeded} 个文件，${summary.failed} 个失败"
+                    else "Exported ${summary.succeeded} file(s), ${summary.failed} failed"
                 }
-            )
+                showBanner(msg, isError = hasError)
+            }
         }
     }
 

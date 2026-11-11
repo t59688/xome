@@ -16,9 +16,11 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.example.R
 import com.example.crypto.LocalPepperVault
+import com.example.crypto.RandomAccessDecryptedStream
 import com.example.crypto.VaultCryptoEngine
 import com.example.crypto.VaultSequencePolicy
 import com.example.crypto.VaultSessionManager
+import com.example.data.VaultDao
 import com.example.data.VaultDatabase
 import com.example.data.VaultFileEntity
 import com.example.data.VaultFolderEntity
@@ -71,6 +73,13 @@ object VaultStorageManager {
         val totalBytesEncrypted: Long,
         val pendingDeleteHandles: List<DeletableSourceHandle>,
         val errors: List<String>
+    )
+
+    data class BatchOperationSummary(
+        val succeeded: Int,
+        val failed: Int,
+        val skipped: Int = 0,
+        val exportedPaths: List<String> = emptyList()
     )
 
     data class SourceDeletionOutcome(
@@ -804,56 +813,103 @@ object VaultStorageManager {
         }
         try {
             val tree = resolveVaultTree(context)
-            val blobFile = File(tree.blobsDir, fileEntity.blobFilename)
-            if (!blobFile.exists()) {
-                return@withContext Result.failure(IllegalStateException("Encrypted blob file missing"))
-            }
+            exportSingleBlobWithKey(context, tree, masterKey, fileEntity)
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            Arrays.fill(masterKey, 0.toByte())
+        }
+    }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val resolver = context.contentResolver
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, fileEntity.originalName)
-                    put(MediaStore.Downloads.MIME_TYPE, fileEntity.mimeType)
-                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/XomeRestored")
-                    put(MediaStore.Downloads.IS_PENDING, 1)
+    suspend fun exportEncryptedFilesToPublicDownloads(
+        context: Context,
+        files: List<VaultFileEntity>
+    ): BatchOperationSummary = withContext(Dispatchers.IO) {
+        if (files.isEmpty()) return@withContext BatchOperationSummary(0, 0)
+        val session = VaultSessionManager.activeSession.value
+            ?: return@withContext BatchOperationSummary(0, files.size)
+        val masterKey = try {
+            session.borrowMasterKeyCopy()
+        } catch (_: Exception) {
+            return@withContext BatchOperationSummary(0, files.size)
+        }
+        val tree = resolveVaultTree(context)
+        var succeeded = 0
+        var failed = 0
+        val exportedPaths = mutableListOf<String>()
+        try {
+            files.forEach { file ->
+                val result = exportSingleBlobWithKey(context, tree, masterKey, file)
+                result.onSuccess { path ->
+                    succeeded++
+                    exportedPaths.add(path)
+                }.onFailure {
+                    failed++
                 }
-                val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                val itemUri = resolver.insert(collection, contentValues)
-                    ?: throw IOException("Unable to create a Downloads entry")
+            }
+            BatchOperationSummary(
+                succeeded = succeeded,
+                failed = failed,
+                exportedPaths = exportedPaths
+            )
+        } finally {
+            Arrays.fill(masterKey, 0.toByte())
+        }
+    }
+
+    private fun exportSingleBlobWithKey(
+        context: Context,
+        tree: VaultDirectoryTree,
+        masterKey: ByteArray,
+        fileEntity: VaultFileEntity
+    ): Result<String> = try {
+        val blobFile = File(tree.blobsDir, fileEntity.blobFilename)
+        if (!blobFile.exists()) {
+            Result.failure(IllegalStateException("Encrypted blob file missing"))
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val contentValues = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, fileEntity.originalName)
+                put(MediaStore.Downloads.MIME_TYPE, fileEntity.mimeType)
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/XomeRestored")
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val itemUri = resolver.insert(collection, contentValues)
+                ?: throw IOException("Unable to create a Downloads entry")
+            try {
+                resolver.openOutputStream(itemUri, "w")?.use { out ->
+                    VaultCryptoEngine.decryptBlobFileToStream(masterKey, blobFile, out)
+                } ?: throw IOException("Unable to open the Downloads file for writing")
+
+                val publishValues = ContentValues().apply {
+                    put(MediaStore.Downloads.IS_PENDING, 0)
+                }
+                if (resolver.update(itemUri, publishValues, null, null) <= 0) {
+                    throw IOException("Unable to publish exported file in Downloads")
+                }
+                // MediaStore can rename duplicate names; report the actual saved name.
+                val publishedName = runCatching {
+                    resolver.query(
+                        itemUri, arrayOf(MediaStore.Downloads.DISPLAY_NAME), null, null, null
+                    )?.use { cursor ->
+                        if (cursor.moveToFirst()) cursor.getString(0) else null
+                    }
+                }.getOrNull() ?: fileEntity.originalName
+                Result.success("Download/XomeRestored/$publishedName")
+            } catch (e: Exception) {
+                // Clean only the row created by this export; surface cleanup failure.
                 try {
-                    resolver.openOutputStream(itemUri, "w")?.use { out ->
-                        VaultCryptoEngine.decryptBlobFileToStream(masterKey, blobFile, out)
-                    } ?: throw IOException("Unable to open the Downloads file for writing")
-
-                    val publishValues = ContentValues().apply {
-                        put(MediaStore.Downloads.IS_PENDING, 0)
+                    if (resolver.delete(itemUri, null, null) <= 0 && !isSourceAbsent(context, itemUri)) {
+                        throw IOException("Partial plaintext export could not be removed")
                     }
-                    if (resolver.update(itemUri, publishValues, null, null) <= 0) {
-                        throw IOException("Unable to publish exported file in Downloads")
-                    }
-                    // MediaStore can rename duplicate names; report the actual saved name.
-                    val publishedName = runCatching {
-                        resolver.query(
-                            itemUri, arrayOf(MediaStore.Downloads.DISPLAY_NAME), null, null, null
-                        )?.use { cursor ->
-                            if (cursor.moveToFirst()) cursor.getString(0) else null
-                        }
-                    }.getOrNull() ?: fileEntity.originalName
-                    return@withContext Result.success("Download/XomeRestored/$publishedName")
-                } catch (e: Exception) {
-                    // Clean only the row created by this export; surface cleanup failure.
-                    try {
-                        if (resolver.delete(itemUri, null, null) <= 0 && !isSourceAbsent(context, itemUri)) {
-                            throw IOException("Partial plaintext export could not be removed")
-                        }
-                    } catch (cleanup: Exception) {
-                        throw IOException("Export failed; partial plaintext cleanup could not be confirmed", e)
-                            .apply { addSuppressed(cleanup) }
-                    }
-                    throw e
+                } catch (cleanup: Exception) {
+                    throw IOException("Export failed; partial plaintext cleanup could not be confirmed", e)
+                        .apply { addSuppressed(cleanup) }
                 }
+                throw e
             }
-
+        } else {
             val fallbackDir = File(
                 context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir,
                 "XomeRestored"
@@ -870,35 +926,216 @@ object VaultStorageManager {
                 throw e
             }
             Result.success(outFile.absolutePath)
-        } catch (e: Exception) {
-            Result.failure(e)
+        }
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    internal fun resolveUniqueCopyName(
+        existingNamesLower: MutableSet<String>,
+        originalName: String
+    ): String {
+        val clean = originalName.trim().ifEmpty { "file" }
+        if (existingNamesLower.add(clean.lowercase(java.util.Locale.ROOT))) {
+            return clean
+        }
+        val dotIdx = clean.lastIndexOf('.')
+        val (stem, ext) = if (dotIdx > 0) {
+            clean.substring(0, dotIdx) to clean.substring(dotIdx)
+        } else {
+            clean to ""
+        }
+        var counter = 1
+        while (true) {
+            val candidate = "$stem ($counter)$ext"
+            if (existingNamesLower.add(candidate.lowercase(java.util.Locale.ROOT))) {
+                return candidate
+            }
+            counter++
+        }
+    }
+
+    private suspend fun loadFolderFileNamesLower(
+        dao: VaultDao,
+        folderId: Long?
+    ): MutableSet<String> {
+        val files = if (folderId == null) dao.getFilesInRootSync() else dao.getFilesInFolderSync(folderId)
+        return files.map { it.originalName.lowercase(java.util.Locale.ROOT) }.toMutableSet()
+    }
+
+    suspend fun copyVaultFilesToFolder(
+        context: Context,
+        files: List<VaultFileEntity>,
+        targetFolderId: Long?
+    ): BatchOperationSummary = withContext(Dispatchers.IO) {
+        if (files.isEmpty()) return@withContext BatchOperationSummary(0, 0)
+        val session = VaultSessionManager.activeSession.value
+            ?: return@withContext BatchOperationSummary(0, files.size)
+        val dao = session.database.vaultDao()
+        if (targetFolderId != null && dao.getFolderById(targetFolderId) == null) {
+            return@withContext BatchOperationSummary(0, files.size)
+        }
+        val masterKey = try {
+            session.borrowMasterKeyCopy()
+        } catch (_: Exception) {
+            return@withContext BatchOperationSummary(0, files.size)
+        }
+        val tree = resolveVaultTree(context)
+        val existingNames = loadFolderFileNamesLower(dao, targetFolderId)
+        var succeeded = 0
+        var failed = 0
+        try {
+            files.forEach { req ->
+                val source = dao.getFileById(req.id)
+                val srcBlob = source?.let { File(tree.blobsDir, it.blobFilename) }
+                if (source == null || srcBlob == null || !srcBlob.exists()) {
+                    failed++
+                    return@forEach
+                }
+                val newBlobName = "${UUID.randomUUID().toString().replace("-", "")}.dat"
+                val dstBlob = File(tree.blobsDir, newBlobName)
+                try {
+                    // Stream-reencrypt with a fresh DEK and chunk nonce so duplicates are unlinkable on disk.
+                    RandomAccessDecryptedStream(srcBlob, masterKey).use { decryptedStream ->
+                        VaultCryptoEngine.encryptStreamToBlobFile(
+                            masterKey = masterKey,
+                            inputStream = decryptedStream,
+                            targetBlobFile = dstBlob
+                        )
+                    }
+                    val freshThumb = source.encryptedThumbnail?.let { oldThumb ->
+                        val plainThumb = VaultCryptoEngine.decryptThumbnail(masterKey, oldThumb)
+                        if (plainThumb != null) {
+                            try {
+                                VaultCryptoEngine.encryptThumbnail(masterKey, plainThumb)
+                            } finally {
+                                Arrays.fill(plainThumb, 0.toByte())
+                            }
+                        } else {
+                            null
+                        }
+                    }
+                    val uniqueName = resolveUniqueCopyName(existingNames, source.originalName)
+                    dao.insertFile(
+                        VaultFileEntity(
+                            folderId = targetFolderId,
+                            originalName = uniqueName,
+                            mimeType = source.mimeType,
+                            originalSize = source.originalSize,
+                            blobFilename = newBlobName,
+                            encryptedThumbnail = freshThumb,
+                            importedAt = System.currentTimeMillis()
+                        )
+                    )
+                    succeeded++
+                } catch (_: Exception) {
+                    dstBlob.delete()
+                    failed++
+                }
+            }
+            BatchOperationSummary(succeeded = succeeded, failed = failed)
         } finally {
             Arrays.fill(masterKey, 0.toByte())
         }
     }
 
-    suspend fun shredVaultFile(context: Context, fileEntity: VaultFileEntity) =
-        withContext(Dispatchers.IO) {
-            val session = VaultSessionManager.activeSession.value ?: return@withContext
-            val tree = resolveVaultTree(context)
-            val blobFile = File(tree.blobsDir, fileEntity.blobFilename)
-            if (blobFile.exists()) {
-                try {
-                    val shredLen = blobFile.length().coerceAtMost(4096L).toInt()
-                    if (shredLen > 0) {
-                        val noise = VaultCryptoEngine.randomBytes(shredLen)
-                        java.io.RandomAccessFile(blobFile, "rw").use { raf ->
-                            raf.seek(0L)
-                            raf.write(noise)
-                            raf.fd.sync()
-                        }
-                    }
-                } catch (_: Exception) {
-                }
-                blobFile.delete()
-            }
-            session.database.vaultDao().deleteFileById(fileEntity.id)
+    suspend fun moveVaultFilesToFolder(
+        files: List<VaultFileEntity>,
+        targetFolderId: Long?
+    ): BatchOperationSummary = withContext(Dispatchers.IO) {
+        if (files.isEmpty()) return@withContext BatchOperationSummary(0, 0)
+        val session = VaultSessionManager.activeSession.value
+            ?: return@withContext BatchOperationSummary(0, files.size)
+        val dao = session.database.vaultDao()
+        if (targetFolderId != null && dao.getFolderById(targetFolderId) == null) {
+            return@withContext BatchOperationSummary(0, files.size)
         }
+        val existingNames = loadFolderFileNamesLower(dao, targetFolderId)
+        var succeeded = 0
+        var failed = 0
+        var skipped = 0
+        files.forEach { req ->
+            val current = dao.getFileById(req.id)
+            if (current == null) {
+                failed++
+            } else if (current.folderId == targetFolderId) {
+                skipped++
+            } else {
+                val resolvedName = resolveUniqueCopyName(existingNames, current.originalName)
+                dao.updateFileNameAndFolder(current.id, resolvedName, targetFolderId)
+                succeeded++
+            }
+        }
+        BatchOperationSummary(succeeded = succeeded, failed = failed, skipped = skipped)
+    }
+
+    suspend fun shredVaultFile(context: Context, fileEntity: VaultFileEntity) {
+        shredVaultFiles(context, listOf(fileEntity))
+    }
+
+    suspend fun shredVaultFiles(context: Context, files: List<VaultFileEntity>): Set<Long> =
+        withContext(Dispatchers.IO) {
+            if (files.isEmpty()) return@withContext emptySet()
+            val session = VaultSessionManager.activeSession.value ?: return@withContext emptySet()
+            val tree = resolveVaultTree(context)
+            val dao = session.database.vaultDao()
+            val deletedIds = mutableSetOf<Long>()
+            files.forEach { file ->
+                shredSingleFileWithDao(tree, dao, file)
+                deletedIds.add(file.id)
+            }
+            deletedIds
+        }
+
+    suspend fun deleteFolderRecursive(context: Context, folder: VaultFolderEntity): Set<Long> =
+        withContext(Dispatchers.IO) {
+            val session = VaultSessionManager.activeSession.value ?: return@withContext emptySet()
+            val dao = session.database.vaultDao()
+            val tree = resolveVaultTree(context)
+            val visited = mutableSetOf<Long>()
+            val postOrder = mutableListOf<VaultFolderEntity>()
+
+            suspend fun collect(current: VaultFolderEntity) {
+                if (!visited.add(current.id)) return
+                dao.getSubfoldersSync(current.id).forEach { collect(it) }
+                postOrder.add(current)
+            }
+            collect(folder)
+
+            val deletedFileIds = mutableSetOf<Long>()
+            postOrder.forEach { targetFolder ->
+                dao.getFilesInFolderSync(targetFolder.id).forEach { file ->
+                    shredSingleFileWithDao(tree, dao, file)
+                    deletedFileIds.add(file.id)
+                }
+                dao.deleteFolderById(targetFolder.id)
+            }
+            deletedFileIds
+        }
+
+    private suspend fun shredSingleFileWithDao(
+        tree: VaultDirectoryTree,
+        dao: VaultDao,
+        fileEntity: VaultFileEntity
+    ) {
+        val blobFile = File(tree.blobsDir, fileEntity.blobFilename)
+        if (blobFile.exists()) {
+            try {
+                val shredLen = blobFile.length().coerceAtMost(4096L).toInt()
+                if (shredLen > 0) {
+                    val noise = VaultCryptoEngine.randomBytes(shredLen)
+                    java.io.RandomAccessFile(blobFile, "rw").use { raf ->
+                        raf.seek(0L)
+                        raf.write(noise)
+                        raf.fd.sync()
+                    }
+                }
+            } catch (_: Exception) {
+            }
+            blobFile.delete()
+        }
+        dao.deleteFileById(fileEntity.id)
+    }
 
     suspend fun exportVaultSelfHealingBundle(
         context: Context,

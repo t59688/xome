@@ -15,6 +15,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -33,24 +35,30 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.DeleteForever
-import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
@@ -58,8 +66,10 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Translate
@@ -67,8 +77,11 @@ import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -100,11 +113,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.crypto.RootSecurityDetector
 import com.example.crypto.VaultCryptoEngine
 import com.example.crypto.VaultSessionManager
@@ -135,6 +153,46 @@ import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+private enum class FolderPickerMode {
+    COPY,
+    MOVE
+}
+
+internal data class FlattenedFolderNode(
+    val folder: VaultFolderEntity,
+    val depth: Int
+)
+
+internal fun buildFlattenedFolderTree(allFolders: List<VaultFolderEntity>): List<FlattenedFolderNode> {
+    if (allFolders.isEmpty()) return emptyList()
+    val childrenByParent = allFolders
+        .sortedBy { it.folderName.lowercase() }
+        .groupBy { it.parentId }
+    val result = mutableListOf<FlattenedFolderNode>()
+    val visited = HashSet<Long>(allFolders.size)
+
+    fun dfs(parentId: Long?, depth: Int) {
+        childrenByParent[parentId].orEmpty().forEach { folder ->
+            if (visited.add(folder.id)) {
+                result.add(FlattenedFolderNode(folder = folder, depth = depth))
+                dfs(folder.id, depth + 1)
+            }
+        }
+    }
+
+    dfs(parentId = null, depth = 0)
+    // Attach any orphaned cycles/nodes deterministically at top depth so no folder is hidden.
+    allFolders
+        .sortedBy { it.folderName.lowercase() }
+        .forEach { folder ->
+            if (visited.add(folder.id)) {
+                result.add(FlattenedFolderNode(folder = folder, depth = 0))
+                dfs(folder.id, 1)
+            }
+        }
+    return result
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun VaultSpaceScreen(
@@ -143,6 +201,7 @@ fun VaultSpaceScreen(
     folders: List<VaultFolderEntity>,
     files: List<VaultFileEntity>,
     breadcrumbs: List<VaultFolderEntity>,
+    allFolders: List<VaultFolderEntity> = emptyList(),
     searchQuery: String,
     totalSpacesCount: Int,
     totalFilesCount: Int,
@@ -162,6 +221,7 @@ fun VaultSpaceScreen(
     onNavigateUp: () -> Boolean,
     onSearchQueryChange: (String) -> Unit,
     onCreateFolder: (String) -> Unit,
+    onRenameFolder: (VaultFolderEntity, String) -> Unit = { _, _ -> },
     onDeleteFolder: (VaultFolderEntity) -> Unit,
     onImportUris: (List<android.net.Uri>, Boolean) -> Unit,
     onConfirmDeleteOriginals: () -> Unit,
@@ -170,7 +230,11 @@ fun VaultSpaceScreen(
     onCreateEncryptedNote: (String, String) -> Unit,
     onOpenFileViewer: (VaultFileEntity) -> Unit,
     onExportFileToPublic: (VaultFileEntity) -> Unit,
+    onExportFilesToPublic: (List<VaultFileEntity>) -> Unit = {},
+    onCopyFiles: (List<VaultFileEntity>, Long?) -> Unit = { _, _ -> },
+    onMoveFiles: (List<VaultFileEntity>, Long?) -> Unit = { _, _ -> },
     onShredFile: (VaultFileEntity) -> Unit,
+    onShredFiles: (List<VaultFileEntity>) -> Unit = {},
     onRenameFile: (VaultFileEntity, String) -> Unit,
     onChangeSequence: (String, String, String, (Boolean, String) -> Unit) -> Unit,
     onRotateKeyfile: (String, ByteArray?, (Boolean, String) -> Unit) -> Unit,
@@ -187,6 +251,7 @@ fun VaultSpaceScreen(
     onSourceReselected: (android.net.Uri?) -> Unit = {}
 ) {
     val strings = LocalAppStrings.current
+    val haptics = LocalHapticFeedback.current
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var showImportSheet by remember { mutableStateOf(false) }
     var isMoveAndWipeMode by rememberSaveable { mutableStateOf(false) }
@@ -194,11 +259,53 @@ fun VaultSpaceScreen(
     var showNewNoteDialog by remember { mutableStateOf(false) }
     var selectedFileForActions by remember { mutableStateOf<VaultFileEntity?>(null) }
 
+    var isSelectionMode by remember { mutableStateOf(false) }
+    var selectedFileIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var fileForRename by remember { mutableStateOf<VaultFileEntity?>(null) }
+    var folderForActions by remember { mutableStateOf<VaultFolderEntity?>(null) }
+    var folderForRename by remember { mutableStateOf<VaultFolderEntity?>(null) }
+    var folderPendingDelete by remember { mutableStateOf<VaultFolderEntity?>(null) }
+    var pendingPickerRequest by remember { mutableStateOf<Pair<FolderPickerMode, List<VaultFileEntity>>?>(null) }
+    var pendingShredRequest by remember { mutableStateOf<Pair<Boolean, List<VaultFileEntity>>?>(null) }
+
+    val currentFolderId = breadcrumbs.lastOrNull()?.id
+    val selectedFiles = remember(files, selectedFileIds) {
+        files.filter { it.id in selectedFileIds }
+    }
+    val allCurrentFilesSelected = files.isNotEmpty() && selectedFileIds.containsAll(files.map { it.id })
+
+    fun exitSelectionMode() {
+        isSelectionMode = false
+        selectedFileIds = emptySet()
+    }
+
+    fun toggleFileSelection(fileId: Long) {
+        selectedFileIds = if (fileId in selectedFileIds) {
+            selectedFileIds - fileId
+        } else {
+            selectedFileIds + fileId
+        }
+    }
+
+    LaunchedEffect(files) {
+        val visibleIds = files.map { it.id }.toSet()
+        val pruned = selectedFileIds.intersect(visibleIds)
+        if (pruned != selectedFileIds) {
+            selectedFileIds = pruned
+        }
+    }
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab != 0 && isSelectionMode) {
+            exitSelectionMode()
+        }
+    }
+
     BackHandler {
-        if (selectedTab == 1) {
-            selectedTab = 0
-        } else if (!onNavigateUp()) {
-            onLockVault()
+        when {
+            selectedTab == 1 -> selectedTab = 0
+            isSelectionMode -> exitSelectionMode()
+            !onNavigateUp() -> onLockVault()
         }
     }
 
@@ -327,52 +434,90 @@ fun VaultSpaceScreen(
         containerColor = VaultVoidBg,
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
-            VaultTopHeaderBar(
-                spaceMeta = spaceMeta,
-                searchQuery = searchQuery,
-                onSearchQueryChange = onSearchQueryChange,
-                onToggleLanguage = onToggleLanguage,
-                onLockVault = onLockVault
-            )
-        },
-        bottomBar = {
-            NavigationBar(
-                containerColor = VaultSurface,
-                tonalElevation = 0.dp,
-                windowInsets = WindowInsets.navigationBars
-            ) {
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Default.Folder, contentDescription = strings.navEncryptedVfs) },
-                    label = { Text(strings.navEncryptedVfs, maxLines = 1) },
-                    colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = VaultAccentPrimary,
-                        selectedTextColor = VaultAccentPrimary,
-                        indicatorColor = VaultAccentPrimary.copy(alpha = 0.14f),
-                        unselectedIconColor = CalcTextSecondary,
-                        unselectedTextColor = CalcTextSecondary
-                    ),
-                    modifier = Modifier.testTag("vault_nav_files")
+            if (selectedTab == 0 && isSelectionMode) {
+                SelectionTopHeaderBar(
+                    selectedCount = selectedFiles.size,
+                    hasFiles = files.isNotEmpty(),
+                    allSelected = allCurrentFilesSelected,
+                    onExitSelection = { exitSelectionMode() },
+                    onToggleSelectAll = {
+                        selectedFileIds = if (allCurrentFilesSelected) {
+                            emptySet()
+                        } else {
+                            files.map { it.id }.toSet()
+                        }
+                    }
                 )
-                NavigationBarItem(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = strings.navSpacesAndCrypto) },
-                    label = { Text(strings.navSpacesAndCrypto, maxLines = 1) },
-                    colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = VaultAccentPrimary,
-                        selectedTextColor = VaultAccentPrimary,
-                        indicatorColor = VaultAccentPrimary.copy(alpha = 0.14f),
-                        unselectedIconColor = CalcTextSecondary,
-                        unselectedTextColor = CalcTextSecondary
-                    ),
-                    modifier = Modifier.testTag("vault_nav_security")
+            } else {
+                VaultTopHeaderBar(
+                    spaceMeta = spaceMeta,
+                    showMultiSelectAction = selectedTab == 0,
+                    searchQuery = searchQuery,
+                    onSearchQueryChange = onSearchQueryChange,
+                    onEnterMultiSelect = { isSelectionMode = true },
+                    onToggleLanguage = onToggleLanguage,
+                    onLockVault = onLockVault
                 )
             }
         },
+        bottomBar = {
+            if (selectedTab == 0 && isSelectionMode) {
+                VaultBatchActionBar(
+                    hasSelection = selectedFiles.isNotEmpty(),
+                    onCopyClick = {
+                        pendingPickerRequest = FolderPickerMode.COPY to selectedFiles
+                    },
+                    onMoveClick = {
+                        pendingPickerRequest = FolderPickerMode.MOVE to selectedFiles
+                    },
+                    onExportClick = {
+                        val targets = selectedFiles
+                        exitSelectionMode()
+                        onExportFilesToPublic(targets)
+                    },
+                    onDeleteClick = {
+                        pendingShredRequest = true to selectedFiles
+                    }
+                )
+            } else {
+                NavigationBar(
+                    containerColor = VaultSurface,
+                    tonalElevation = 0.dp,
+                    windowInsets = WindowInsets.navigationBars
+                ) {
+                    NavigationBarItem(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        icon = { Icon(Icons.Default.Folder, contentDescription = strings.navEncryptedVfs) },
+                        label = { Text(strings.navEncryptedVfs, maxLines = 1) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = VaultAccentPrimary,
+                            selectedTextColor = VaultAccentPrimary,
+                            indicatorColor = VaultAccentPrimary.copy(alpha = 0.14f),
+                            unselectedIconColor = CalcTextSecondary,
+                            unselectedTextColor = CalcTextSecondary
+                        ),
+                        modifier = Modifier.testTag("vault_nav_files")
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        icon = { Icon(Icons.Default.Settings, contentDescription = strings.navSpacesAndCrypto) },
+                        label = { Text(strings.navSpacesAndCrypto, maxLines = 1) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = VaultAccentPrimary,
+                            selectedTextColor = VaultAccentPrimary,
+                            indicatorColor = VaultAccentPrimary.copy(alpha = 0.14f),
+                            unselectedIconColor = CalcTextSecondary,
+                            unselectedTextColor = CalcTextSecondary
+                        ),
+                        modifier = Modifier.testTag("vault_nav_security")
+                    )
+                }
+            }
+        },
         floatingActionButton = {
-            if (selectedTab == 0) {
+            if (selectedTab == 0 && !isSelectionMode) {
                 FloatingActionButton(
                     onClick = { showImportSheet = true },
                     containerColor = VaultAccentPrimary,
@@ -475,14 +620,22 @@ fun VaultSpaceScreen(
             if (selectedTab == 0) {
                 FolderBreadcrumbBar(
                     breadcrumbs = breadcrumbs,
-                    onNavigateToRoot = { onNavigateToFolder(null) },
-                    onNavigateToCrumb = { onNavigateToFolder(it) },
+                    onNavigateToRoot = {
+                        exitSelectionMode()
+                        onNavigateToFolder(null)
+                    },
+                    onNavigateToCrumb = {
+                        exitSelectionMode()
+                        onNavigateToFolder(it)
+                    },
                     onNewFolderClick = { showNewFolderDialog = true },
                     onNewNoteClick = { showNewNoteDialog = true }
                 )
 
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("vault_lazy_list"),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
@@ -498,8 +651,11 @@ fun VaultSpaceScreen(
                         items(folders, key = { "folder_${it.id}" }) { folder ->
                             EncryptedFolderRow(
                                 folder = folder,
-                                onClick = { onNavigateToFolder(folder) },
-                                onDelete = { onDeleteFolder(folder) }
+                                onClick = {
+                                    exitSelectionMode()
+                                    onNavigateToFolder(folder)
+                                },
+                                onMoreActionsClick = { folderForActions = folder }
                             )
                         }
                     }
@@ -525,10 +681,24 @@ fun VaultSpaceScreen(
                         }
                     } else {
                         items(files, key = { "file_${it.id}" }) { fileEntity ->
+                            val isSelected = fileEntity.id in selectedFileIds
                             EncryptedFileCard(
                                 session = session,
                                 fileEntity = fileEntity,
-                                onClick = { onOpenFileViewer(fileEntity) },
+                                isSelectionMode = isSelectionMode,
+                                isSelected = isSelected,
+                                onClick = {
+                                    if (isSelectionMode) {
+                                        toggleFileSelection(fileEntity.id)
+                                    } else {
+                                        onOpenFileViewer(fileEntity)
+                                    }
+                                },
+                                onLongClick = {
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    isSelectionMode = true
+                                    selectedFileIds = selectedFileIds + fileEntity.id
+                                },
                                 onMoreActionsClick = { selectedFileForActions = fileEntity }
                             )
                         }
@@ -700,17 +870,127 @@ fun VaultSpaceScreen(
                 selectedFileForActions = null
                 onOpenFileViewer(targetFile)
             },
-            onRename = { newName ->
+            onRenameClick = {
                 selectedFileForActions = null
-                onRenameFile(targetFile, newName)
+                fileForRename = targetFile
+            },
+            onCopyClick = {
+                selectedFileForActions = null
+                pendingPickerRequest = FolderPickerMode.COPY to listOf(targetFile)
+            },
+            onMoveClick = {
+                selectedFileForActions = null
+                pendingPickerRequest = FolderPickerMode.MOVE to listOf(targetFile)
             },
             onExportToDownloads = {
                 selectedFileForActions = null
                 onExportFileToPublic(targetFile)
             },
-            onShred = {
+            onSelectMultipleClick = {
                 selectedFileForActions = null
-                onShredFile(targetFile)
+                isSelectionMode = true
+                selectedFileIds = selectedFileIds + targetFile.id
+            },
+            onDeleteClick = {
+                selectedFileForActions = null
+                pendingShredRequest = false to listOf(targetFile)
+            }
+        )
+    }
+
+    fileForRename?.let { targetFile ->
+        RenameTextDialog(
+            title = strings.renameFileTitle,
+            fieldLabel = strings.encryptedFilenameLabel,
+            initialValue = targetFile.originalName,
+            onDismiss = { fileForRename = null },
+            onConfirm = { newName ->
+                fileForRename = null
+                onRenameFile(targetFile, newName)
+            }
+        )
+    }
+
+    folderForActions?.let { targetFolder ->
+        FolderActionsDialog(
+            folder = targetFolder,
+            onDismiss = { folderForActions = null },
+            onOpenClick = {
+                folderForActions = null
+                exitSelectionMode()
+                onNavigateToFolder(targetFolder)
+            },
+            onRenameClick = {
+                folderForActions = null
+                folderForRename = targetFolder
+            },
+            onDeleteClick = {
+                folderForActions = null
+                folderPendingDelete = targetFolder
+            }
+        )
+    }
+
+    folderForRename?.let { targetFolder ->
+        RenameTextDialog(
+            title = strings.renameFolderTitle,
+            fieldLabel = strings.directoryNameLabel,
+            initialValue = targetFolder.folderName,
+            onDismiss = { folderForRename = null },
+            onConfirm = { newName ->
+                folderForRename = null
+                onRenameFolder(targetFolder, newName)
+            }
+        )
+    }
+
+    folderPendingDelete?.let { targetFolder ->
+        ConfirmDestructiveDialog(
+            title = strings.confirmDeleteFolderTitle,
+            message = strings.confirmDeleteFolderMessage(targetFolder.folderName),
+            confirmLabel = strings.confirmShredBtn,
+            onDismiss = { folderPendingDelete = null },
+            onConfirm = {
+                folderPendingDelete = null
+                onDeleteFolder(targetFolder)
+            }
+        )
+    }
+
+    pendingPickerRequest?.let { (mode, targets) ->
+        DestinationFolderPickerDialog(
+            mode = mode,
+            files = targets,
+            allFolders = allFolders,
+            currentFolderId = currentFolderId,
+            onDismiss = { pendingPickerRequest = null },
+            onConfirm = { targetFolderId ->
+                pendingPickerRequest = null
+                if (isSelectionMode) {
+                    exitSelectionMode()
+                }
+                when (mode) {
+                    FolderPickerMode.COPY -> onCopyFiles(targets, targetFolderId)
+                    FolderPickerMode.MOVE -> onMoveFiles(targets, targetFolderId)
+                }
+            }
+        )
+    }
+
+    pendingShredRequest?.let { (fromSelectionMode, targets) ->
+        ConfirmDestructiveDialog(
+            title = strings.confirmShredFilesTitle,
+            message = strings.confirmShredFilesMessage(targets.size),
+            confirmLabel = strings.confirmShredBtn,
+            onDismiss = { pendingShredRequest = null },
+            onConfirm = {
+                pendingShredRequest = null
+                if (fromSelectionMode) {
+                    exitSelectionMode()
+                    onShredFiles(targets)
+                } else {
+                    onShredFile(targets.first())
+                }
             }
         )
     }
@@ -737,10 +1017,180 @@ fun VaultSpaceScreen(
 }
 
 @Composable
+private fun SelectionTopHeaderBar(
+    selectedCount: Int,
+    hasFiles: Boolean,
+    allSelected: Boolean,
+    onExitSelection: () -> Unit,
+    onToggleSelectAll: () -> Unit
+) {
+    val strings = LocalAppStrings.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(VaultSurface)
+            .statusBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .testTag("vault_selection_topbar"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f)
+        ) {
+            IconButton(
+                onClick = onExitSelection,
+                modifier = Modifier
+                    .size(38.dp)
+                    .testTag("selection_exit_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = strings.cancelBtn,
+                    tint = CalcTextPrimary
+                )
+            }
+            Text(
+                text = strings.selectedCountLabel(selectedCount),
+                style = MaterialTheme.typography.titleLarge,
+                color = CalcTextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("selection_count_text")
+            )
+        }
+
+        TextButton(
+            onClick = onToggleSelectAll,
+            enabled = hasFiles,
+            modifier = Modifier.testTag("selection_select_all_button")
+        ) {
+            Icon(
+                imageVector = Icons.Default.SelectAll,
+                contentDescription = null,
+                tint = if (hasFiles) VaultAccentPrimary else CalcTextMuted,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = if (allSelected) strings.deselectAllBtn else strings.selectAllBtn,
+                color = if (hasFiles) VaultAccentPrimary else CalcTextMuted,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun VaultBatchActionBar(
+    hasSelection: Boolean,
+    onCopyClick: () -> Unit,
+    onMoveClick: () -> Unit,
+    onExportClick: () -> Unit,
+    onDeleteClick: () -> Unit
+) {
+    val strings = LocalAppStrings.current
+    Surface(
+        color = VaultSurface,
+        border = BorderStroke(1.dp, VaultBorderSubtle),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("vault_batch_action_bar")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BatchActionButton(
+                icon = Icons.Default.ContentCopy,
+                label = strings.copyToBtn,
+                enabled = hasSelection,
+                tint = VaultAccentPrimary,
+                testTag = "batch_copy_button",
+                onClick = onCopyClick,
+                modifier = Modifier.weight(1f)
+            )
+            BatchActionButton(
+                icon = Icons.AutoMirrored.Filled.DriveFileMove,
+                label = strings.moveToBtn,
+                enabled = hasSelection,
+                tint = VaultAccentPrimary,
+                testTag = "batch_move_button",
+                onClick = onMoveClick,
+                modifier = Modifier.weight(1f)
+            )
+            BatchActionButton(
+                icon = Icons.Default.Download,
+                label = strings.restoreBtn,
+                enabled = hasSelection,
+                tint = VaultEmeraldSuccess,
+                testTag = "batch_export_button",
+                onClick = onExportClick,
+                modifier = Modifier.weight(1f)
+            )
+            BatchActionButton(
+                icon = Icons.Default.DeleteForever,
+                label = strings.csprngShredBtn,
+                enabled = hasSelection,
+                tint = CalcClearKeyText,
+                testTag = "batch_delete_button",
+                onClick = onDeleteClick,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun BatchActionButton(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean,
+    tint: Color,
+    testTag: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val effectiveTint = if (enabled) tint else CalcTextMuted
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 6.dp, horizontal = 4.dp)
+            .testTag(testTag)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = effectiveTint,
+            modifier = Modifier.size(20.dp)
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) CalcTextPrimary else CalcTextMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
 private fun VaultTopHeaderBar(
     spaceMeta: VaultSpaceMetaEntity?,
+    showMultiSelectAction: Boolean,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
+    onEnterMultiSelect: () -> Unit,
     onToggleLanguage: () -> Unit,
     onLockVault: () -> Unit
 ) {
@@ -786,6 +1236,24 @@ private fun VaultTopHeaderBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                if (showMultiSelectAction) {
+                    IconButton(
+                        onClick = onEnterMultiSelect,
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(VaultSurfaceElevated)
+                            .testTag("vault_multiselect_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Checklist,
+                            contentDescription = strings.multiSelectBtn,
+                            tint = CalcTextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
                 IconButton(
                     onClick = {
                         isSearchExpanded = !isSearchExpanded
@@ -986,7 +1454,7 @@ private fun FolderBreadcrumbBar(
 private fun EncryptedFolderRow(
     folder: VaultFolderEntity,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onMoreActionsClick: () -> Unit
 ) {
     Surface(
         onClick = onClick,
@@ -1032,25 +1500,31 @@ private fun EncryptedFolderRow(
             }
 
             IconButton(
-                onClick = onDelete,
-                modifier = Modifier.size(36.dp)
+                onClick = onMoreActionsClick,
+                modifier = Modifier
+                    .size(36.dp)
+                    .testTag("folder_more_${folder.id}")
             ) {
                 Icon(
-                    imageVector = Icons.Default.DeleteOutline,
-                    contentDescription = "Delete folder",
-                    tint = CalcTextMuted,
-                    modifier = Modifier.size(19.dp)
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "Folder actions",
+                    tint = CalcTextSecondary,
+                    modifier = Modifier.size(18.dp)
                 )
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun EncryptedFileCard(
     session: VaultSessionManager.ActiveVaultSession,
     fileEntity: VaultFileEntity,
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onMoreActionsClick: () -> Unit
 ) {
     val cacheKey = "${session.spaceId}_thumb_${fileEntity.id}"
@@ -1093,11 +1567,16 @@ private fun EncryptedFileCard(
     }
 
     Surface(
-        onClick = onClick,
-        color = VaultSurface,
+        color = if (isSelected) VaultAccentPrimary.copy(alpha = 0.09f) else VaultSurface,
+        border = if (isSelected) BorderStroke(1.2.dp, VaultAccentPrimary.copy(alpha = 0.7f)) else null,
         shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .testTag("file_item_${fileEntity.id}")
     ) {
         Row(
@@ -1158,18 +1637,31 @@ private fun EncryptedFileCard(
                 )
             }
 
-            IconButton(
-                onClick = onMoreActionsClick,
-                modifier = Modifier
-                    .size(36.dp)
-                    .testTag("file_more_${fileEntity.id}")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.MoreVert,
-                    contentDescription = "Actions",
-                    tint = CalcTextSecondary,
-                    modifier = Modifier.size(18.dp)
+            if (isSelectionMode) {
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onClick() },
+                    colors = CheckboxDefaults.colors(
+                        checkedColor = VaultAccentPrimary,
+                        checkmarkColor = Color(0xFF06202B),
+                        uncheckedColor = CalcTextSecondary
+                    ),
+                    modifier = Modifier.testTag("file_checkbox_${fileEntity.id}")
                 )
+            } else {
+                IconButton(
+                    onClick = onMoreActionsClick,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .testTag("file_more_${fileEntity.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Actions",
+                        tint = CalcTextSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }
@@ -1375,29 +1867,71 @@ private fun VaultImportBottomSheetContent(
 }
 
 @Composable
+private fun ActionMenuRow(
+    icon: ImageVector,
+    label: String,
+    tint: Color = CalcTextPrimary,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = VaultSurfaceElevated.copy(alpha = 0.55f),
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(testTag)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = tint,
+                modifier = Modifier.size(19.dp)
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = tint,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
 private fun FileActionsDialog(
     fileEntity: VaultFileEntity,
     onDismiss: () -> Unit,
     onOpenInMemory: () -> Unit,
-    onRename: (String) -> Unit,
+    onRenameClick: () -> Unit,
+    onCopyClick: () -> Unit,
+    onMoveClick: () -> Unit,
     onExportToDownloads: () -> Unit,
-    onShred: () -> Unit
+    onSelectMultipleClick: () -> Unit,
+    onDeleteClick: () -> Unit
 ) {
     val strings = LocalAppStrings.current
-    var editedName by remember(fileEntity.id) { mutableStateOf(fileEntity.originalName) }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = VaultSurface,
         title = {
-            Text(
-                text = strings.blobOperationsTitle,
-                style = MaterialTheme.typography.titleLarge,
-                color = CalcTextPrimary
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = fileEntity.originalName,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = CalcTextPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
                 Text(
                     text = strings.blobInfoSummary(
                         fileEntity.blobFilename,
@@ -1407,56 +1941,387 @@ private fun FileActionsDialog(
                     style = MaterialTheme.typography.labelSmall,
                     color = CalcTextSecondary
                 )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                HorizontalDivider(color = VaultBorderSubtle)
+                Spacer(modifier = Modifier.height(2.dp))
+                ActionMenuRow(
+                    icon = Icons.Default.FolderOpen,
+                    label = strings.streamInRamViewerBtn,
+                    tint = VaultAccentPrimary,
+                    testTag = "single_action_open",
+                    onClick = onOpenInMemory
+                )
+                ActionMenuRow(
+                    icon = Icons.Default.DriveFileRenameOutline,
+                    label = strings.renameBtn,
+                    testTag = "single_action_rename",
+                    onClick = onRenameClick
+                )
+                ActionMenuRow(
+                    icon = Icons.Default.ContentCopy,
+                    label = strings.copyToBtn,
+                    testTag = "single_action_copy",
+                    onClick = onCopyClick
+                )
+                ActionMenuRow(
+                    icon = Icons.AutoMirrored.Filled.DriveFileMove,
+                    label = strings.moveToBtn,
+                    testTag = "single_action_move",
+                    onClick = onMoveClick
+                )
+                ActionMenuRow(
+                    icon = Icons.Default.Download,
+                    label = strings.restoreBtn,
+                    tint = VaultEmeraldSuccess,
+                    testTag = "single_action_export",
+                    onClick = onExportToDownloads
+                )
+                ActionMenuRow(
+                    icon = Icons.Default.Checklist,
+                    label = strings.multiSelectBtn,
+                    testTag = "single_action_select",
+                    onClick = onSelectMultipleClick
+                )
+                ActionMenuRow(
+                    icon = Icons.Default.DeleteForever,
+                    label = strings.csprngShredBtn,
+                    tint = CalcClearKeyText,
+                    testTag = "single_action_delete",
+                    onClick = onDeleteClick
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.cancelBtn, maxLines = 1)
+            }
+        }
+    )
+}
+
+@Composable
+private fun FolderActionsDialog(
+    folder: VaultFolderEntity,
+    onDismiss: () -> Unit,
+    onOpenClick: () -> Unit,
+    onRenameClick: () -> Unit,
+    onDeleteClick: () -> Unit
+) {
+    val strings = LocalAppStrings.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = VaultSurface,
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = folder.folderName,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = CalcTextPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = strings.folderActionsTitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CalcTextSecondary
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                HorizontalDivider(color = VaultBorderSubtle)
+                Spacer(modifier = Modifier.height(2.dp))
+                ActionMenuRow(
+                    icon = Icons.Default.FolderOpen,
+                    label = strings.openFolderBtn,
+                    tint = VaultAccentPrimary,
+                    testTag = "folder_action_open",
+                    onClick = onOpenClick
+                )
+                ActionMenuRow(
+                    icon = Icons.Default.DriveFileRenameOutline,
+                    label = strings.renameBtn,
+                    testTag = "folder_action_rename",
+                    onClick = onRenameClick
+                )
+                ActionMenuRow(
+                    icon = Icons.Default.DeleteForever,
+                    label = strings.csprngShredBtn,
+                    tint = CalcClearKeyText,
+                    testTag = "folder_action_delete",
+                    onClick = onDeleteClick
+                )
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.cancelBtn, maxLines = 1)
+            }
+        }
+    )
+}
+
+@Composable
+private fun RenameTextDialog(
+    title: String,
+    fieldLabel: String,
+    initialValue: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    val strings = LocalAppStrings.current
+    var text by remember(initialValue) { mutableStateOf(initialValue) }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            color = VaultSurface,
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, VaultBorderSubtle),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .widthIn(max = 460.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = CalcTextPrimary
+                )
                 OutlinedTextField(
-                    value = editedName,
-                    onValueChange = { editedName = it },
-                    label = { Text(strings.encryptedFilenameLabel) },
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text(fieldLabel) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("rename_input_field")
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    OutlinedButton(
-                        onClick = { onRename(editedName) },
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.DriveFileRenameOutline, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(strings.renameBtn, maxLines = 1)
+                    TextButton(onClick = onDismiss) {
+                        Text(strings.cancelBtn, maxLines = 1)
                     }
-                    OutlinedButton(
-                        onClick = onExportToDownloads,
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.weight(1f)
+                    Button(
+                        onClick = { onConfirm(text.trim()) },
+                        enabled = text.isNotBlank(),
+                        modifier = Modifier.testTag("rename_confirm_button")
                     ) {
-                        Icon(Icons.Default.Download, contentDescription = null, tint = VaultAccentPrimary, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(strings.restoreBtn, color = VaultAccentPrimary, maxLines = 1)
+                        Text(strings.saveBtn, maxLines = 1)
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfirmDestructiveDialog(
+    title: String,
+    message: String,
+    confirmLabel: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    val strings = LocalAppStrings.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = VaultSurface,
+        title = { Text(title, color = CalcTextPrimary) },
+        text = {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = CalcTextSecondary
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CalcClearKeyText,
+                    contentColor = Color.White
+                ),
+                modifier = Modifier.testTag("confirm_shred_button")
+            ) {
+                Text(confirmLabel, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("cancel_shred_button")
+            ) {
+                Text(strings.cancelBtn, maxLines = 1)
+            }
+        }
+    )
+}
+
+@Composable
+private fun DestinationFolderPickerDialog(
+    mode: FolderPickerMode,
+    files: List<VaultFileEntity>,
+    allFolders: List<VaultFolderEntity>,
+    currentFolderId: Long?,
+    onDismiss: () -> Unit,
+    onConfirm: (Long?) -> Unit
+) {
+    val strings = LocalAppStrings.current
+    val treeNodes = remember(allFolders) { buildFlattenedFolderTree(allFolders) }
+    var chosenFolderId by remember { mutableStateOf(currentFolderId) }
+    val canConfirm = mode == FolderPickerMode.COPY || files.any { it.folderId != chosenFolderId }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = VaultSurface,
+        title = {
+            Text(
+                text = strings.chooseDestinationTitle(mode == FolderPickerMode.MOVE),
+                style = MaterialTheme.typography.titleLarge,
+                color = CalcTextPrimary
+            )
+        },
+        text = {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                item(key = "root_target") {
+                    PickerFolderRow(
+                        label = strings.rootFolderLabel,
+                        isRoot = true,
+                        depth = 0,
+                        isSelected = chosenFolderId == null,
+                        isCurrentLocation = currentFolderId == null,
+                        currentTagLabel = strings.currentFolderTag,
+                        testTag = "picker_folder_root",
+                        onClick = { chosenFolderId = null }
+                    )
+                }
+                items(treeNodes, key = { "pick_${it.folder.id}" }) { node ->
+                    PickerFolderRow(
+                        label = node.folder.folderName,
+                        isRoot = false,
+                        depth = node.depth + 1,
+                        isSelected = chosenFolderId == node.folder.id,
+                        isCurrentLocation = currentFolderId == node.folder.id,
+                        currentTagLabel = strings.currentFolderTag,
+                        testTag = "picker_folder_${node.folder.id}",
+                        onClick = { chosenFolderId = node.folder.id }
+                    )
                 }
             }
         },
         confirmButton = {
             Button(
-                onClick = onOpenInMemory,
-                shape = RoundedCornerShape(10.dp),
+                onClick = { onConfirm(chosenFolderId) },
+                enabled = canConfirm,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = VaultAccentPrimary,
                     contentColor = Color(0xFF06202B)
-                )
+                ),
+                modifier = Modifier.testTag("picker_confirm_button")
             ) {
-                Text(strings.streamInRamViewerBtn, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text(
+                    text = if (mode == FolderPickerMode.MOVE) strings.moveHereBtn else strings.copyHereBtn,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1
+                )
             }
         },
         dismissButton = {
-            TextButton(onClick = onShred) {
-                Text(strings.csprngShredBtn, color = CalcClearKeyText, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            TextButton(onClick = onDismiss) {
+                Text(strings.cancelBtn, maxLines = 1)
             }
         }
     )
+}
+
+@Composable
+private fun PickerFolderRow(
+    label: String,
+    isRoot: Boolean,
+    depth: Int,
+    isSelected: Boolean,
+    isCurrentLocation: Boolean,
+    currentTagLabel: String,
+    testTag: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = if (isSelected) VaultAccentPrimary.copy(alpha = 0.14f) else VaultSurfaceElevated.copy(alpha = 0.45f),
+        border = if (isSelected) BorderStroke(1.dp, VaultAccentPrimary.copy(alpha = 0.7f)) else null,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(testTag)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = (12 + depth.coerceAtMost(5) * 14).dp,
+                    end = 12.dp,
+                    top = 9.dp,
+                    bottom = 9.dp
+                ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = if (isRoot) Icons.Default.Home else Icons.Default.Folder,
+                contentDescription = null,
+                tint = if (isSelected) VaultAccentPrimary else CalcTextSecondary,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = CalcTextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (isCurrentLocation) {
+                Text(
+                    text = currentTagLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CalcTextMuted
+                )
+            }
+            Icon(
+                imageVector = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                contentDescription = null,
+                tint = if (isSelected) VaultAccentPrimary else CalcTextMuted,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
 }
 
 @Composable

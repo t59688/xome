@@ -124,8 +124,8 @@ internal fun XomeUpdateSettings(repository: UpdateRepository) {
                         color = CalcTextPrimary
                     )
                     Text(
-                        text = if (zh) "当前版本 ${BuildConfig.VERSION_NAME} · GitHub Releases"
-                            else "Version ${BuildConfig.VERSION_NAME} · GitHub Releases",
+                        text = if (zh) "当前版本 ${BuildConfig.VERSION_NAME}"
+                            else "Version ${BuildConfig.VERSION_NAME}",
                         style = MaterialTheme.typography.labelSmall,
                         color = CalcTextSecondary
                     )
