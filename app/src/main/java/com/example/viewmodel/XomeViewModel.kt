@@ -862,13 +862,19 @@ class XomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun reportOriginalDeletion() {
         val remaining = unresolvedDeleteHandles.size
-        showBanner(
-            if (isZh()) "已验证删除 $verifiedDeletedCount 个原文件；$remaining 个未确认删除，加密副本已保存" +
-                (if (remaining > 0) "。可在来源应用检查并手动删除原文件" else "")
-            else "Verified $verifiedDeletedCount original(s) deleted; $remaining unconfirmed. Encrypted copies saved" +
-                (if (remaining > 0) ". Check and delete originals in their source app if needed" else ""),
-            isError = remaining > 0
-        )
+        val message = when {
+            remaining == 0 -> if (isZh()) {
+                "已加密导入并彻底删除 $verifiedDeletedCount 个原文件"
+            } else {
+                "Encrypted and permanently deleted $verifiedDeletedCount original file(s)"
+            }
+            else -> if (isZh()) {
+                "已删除 $verifiedDeletedCount 个原文件；$remaining 个未能自动删除，加密副本已保存。请在来源应用中手动删除"
+            } else {
+                "Deleted $verifiedDeletedCount original(s); $remaining could not be deleted automatically. Encrypted copies saved"
+            }
+        }
+        showBanner(message, isError = remaining > 0)
     }
 
     fun onSourceReselected(uri: Uri?) {

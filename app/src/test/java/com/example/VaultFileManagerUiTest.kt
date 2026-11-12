@@ -24,6 +24,7 @@ import com.example.data.VaultDatabase
 import com.example.data.VaultFileEntity
 import com.example.data.VaultFolderEntity
 import com.example.data.VaultSpaceMetaEntity
+import com.example.storage.AllFilesPermissionHelper
 import com.example.ui.i18n.AppLanguage
 import com.example.ui.i18n.EnglishAppStrings
 import com.example.ui.i18n.LocalAppStrings
@@ -339,5 +340,40 @@ class VaultFileManagerUiTest {
         compose.onNodeWithTag("confirm_shred_button").performClick()
         assertEquals(10L, deletedFolderId)
         assertTrue(shreddedSingleId == 1L && deletedFolderId == 10L)
+    }
+
+    @Test
+    fun `missing all files access prompts permission before move mode, and granted opens local browser`() {
+        AllFilesPermissionHelper.testAllFilesAccessOverride = false
+        try {
+            mountScreen()
+            compose.onNodeWithTag("all_files_permission_banner").assertIsDisplayed()
+
+            compose.onNodeWithTag("vault_fab_add").performClick()
+            compose.onNodeWithTag("import_all_files_status_card").assertIsDisplayed()
+            compose.onNodeWithTag("import_move_mode_switch").performClick()
+            compose.onNodeWithTag("grant_all_files_dialog_button").assertIsDisplayed()
+        } finally {
+            AllFilesPermissionHelper.testAllFilesAccessOverride = null
+        }
+    }
+
+    @Test
+    fun `granted all files access hides banner, allows move mode, and opens built-in local file browser`() {
+        AllFilesPermissionHelper.testAllFilesAccessOverride = true
+        try {
+            mountScreen()
+            compose.onNodeWithTag("all_files_permission_banner").assertDoesNotExist()
+
+            compose.onNodeWithTag("vault_fab_add").performClick()
+            compose.onNodeWithTag("import_move_mode_switch").performClick()
+            compose.onNodeWithTag("grant_all_files_dialog_button").assertDoesNotExist()
+            compose.onNodeWithTag("import_system_saf_button").assertIsDisplayed()
+
+            compose.onNodeWithTag("import_saf_files_button").performClick()
+            compose.onNodeWithTag("local_file_browser_dialog").assertIsDisplayed()
+        } finally {
+            AllFilesPermissionHelper.testAllFilesAccessOverride = null
+        }
     }
 }

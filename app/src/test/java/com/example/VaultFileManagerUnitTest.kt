@@ -1,6 +1,7 @@
 package com.example
 
 import android.content.Context
+import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.crypto.VaultCryptoEngine
@@ -203,5 +204,44 @@ class VaultFileManagerUnitTest {
         assertFalse(File(blobsDir, childBFiles.first().blobFilename).exists())
         assertTrue(File(blobsDir, blobName1).exists())
         assertTrue(dao.getFileById(copiedEntity.id) != null)
+    }
+
+    @Test
+    fun `import file uri with moveAndWipeOriginal preserves metadata decrypts identically and deletes original file`() = runBlocking {
+        val tempSourceDir = File(context.cacheDir, "import_move_src_${System.nanoTime()}").apply { mkdirs() }
+        val originalPdf = File(tempSourceDir, "contract 2026.pdf")
+        val payload = "%PDF-1.4\nConfidential document payload\n".encodeToByteArray() + ByteArray(70_000) { (it % 199).toByte() }
+        originalPdf.writeBytes(payload)
+        try {
+            val result = VaultStorageManager.importUrisToVault(
+                context = context,
+                uris = listOf(Uri.fromFile(originalPdf)),
+                targetFolderId = null,
+                moveAndWipeOriginal = true
+            )
+            assertEquals(1, result.importedCount)
+            assertTrue(result.errors.isEmpty())
+            assertEquals(1, result.pendingDeleteHandles.size)
+
+            val stored = database.vaultDao().getFilesInRootSync().single()
+            assertEquals("contract 2026.pdf", stored.originalName)
+            assertEquals("application/pdf", stored.mimeType)
+            assertEquals(payload.size.toLong(), stored.originalSize)
+
+            val decryptedOut = ByteArrayOutputStream()
+            VaultCryptoEngine.decryptBlobFileToStream(
+                masterKey = masterKey,
+                blobFile = File(blobsDir, stored.blobFilename),
+                outputStream = decryptedOut
+            )
+            assertArrayEquals(payload, decryptedOut.toByteArray())
+
+            val outcome = VaultStorageManager.executeConfirmedOriginalDeletion(context, result.pendingDeleteHandles)
+            assertEquals(1, outcome.deletedImmediatelyCount)
+            assertEquals(0, outcome.remainingHandlesCount)
+            assertFalse(originalPdf.exists())
+        } finally {
+            tempSourceDir.deleteRecursively()
+        }
     }
 }

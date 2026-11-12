@@ -3,6 +3,7 @@ package com.example.ui.vault
 import android.app.Activity
 import android.content.IntentSender
 import android.graphics.BitmapFactory
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.ActivityResultLauncher
@@ -101,6 +102,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -116,6 +118,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -123,12 +126,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.crypto.RootSecurityDetector
 import com.example.crypto.VaultCryptoEngine
 import com.example.crypto.VaultSessionManager
 import com.example.data.VaultFileEntity
 import com.example.data.VaultFolderEntity
 import com.example.data.VaultSpaceMetaEntity
+import com.example.storage.AllFilesPermissionHelper
 import com.example.storage.VaultStorageManager
 import com.example.ui.i18n.AppLanguage
 import com.example.ui.i18n.LocalAppStrings
@@ -137,6 +144,7 @@ import com.example.ui.theme.CalcClearKeyText
 import com.example.ui.theme.CalcTextMuted
 import com.example.ui.theme.CalcTextPrimary
 import com.example.ui.theme.CalcTextSecondary
+import com.example.ui.theme.VaultAmberWarning
 import com.example.ui.theme.VaultBorderSubtle
 import com.example.ui.theme.VaultAccentPrimary
 import com.example.ui.theme.VaultEmeraldSuccess
@@ -252,9 +260,17 @@ fun VaultSpaceScreen(
 ) {
     val strings = LocalAppStrings.current
     val haptics = LocalHapticFeedback.current
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var showImportSheet by remember { mutableStateOf(false) }
     var isMoveAndWipeMode by rememberSaveable { mutableStateOf(false) }
+    var hasAllFilesAccess by remember { mutableStateOf(AllFilesPermissionHelper.hasAllFilesAccess(context)) }
+    var permissionBannerDismissed by rememberSaveable { mutableStateOf(false) }
+    var showPermissionRequiredDialog by remember { mutableStateOf(false) }
+    var pendingAfterPermissionGranted by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var showLocalFileBrowser by remember { mutableStateOf(false) }
+    var showLocalMediaPicker by remember { mutableStateOf(false) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var showNewNoteDialog by remember { mutableStateOf(false) }
     var selectedFileForActions by remember { mutableStateOf<VaultFileEntity?>(null) }
@@ -352,28 +368,109 @@ fun VaultSpaceScreen(
         onSourceReselected(uri)
     }
 
+    val allFilesSettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        onExternalActivityFinished()
+        val granted = AllFilesPermissionHelper.hasAllFilesAccess(context)
+        hasAllFilesAccess = granted
+        val action = pendingAfterPermissionGranted
+        pendingAfterPermissionGranted = null
+        if (granted) {
+            action?.invoke()
+        }
+    }
+
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        onExternalActivityFinished()
+        val granted = AllFilesPermissionHelper.hasAllFilesAccess(context)
+        hasAllFilesAccess = granted
+        val action = pendingAfterPermissionGranted
+        pendingAfterPermissionGranted = null
+        if (granted) {
+            action?.invoke()
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasAllFilesAccess = AllFilesPermissionHelper.hasAllFilesAccess(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    fun requestAllFilesPermission(afterGranted: (() -> Unit)? = null) {
+        if (AllFilesPermissionHelper.hasAllFilesAccess(context)) {
+            hasAllFilesAccess = true
+            afterGranted?.invoke()
+            return
+        }
+        pendingAfterPermissionGranted = afterGranted
+        if (AllFilesPermissionHelper.needsLegacyRuntimePermissions()) {
+            legacyStoragePermissionLauncher.launchWithVaultGuard(
+                AllFilesPermissionHelper.legacyStoragePermissions(),
+                onExternalActivityStarted,
+                onExternalActivityFinished
+            )
+        } else {
+            allFilesSettingsLauncher.launchWithVaultGuard(
+                AllFilesPermissionHelper.createAllFilesSettingsIntent(context),
+                onExternalActivityStarted,
+                onExternalActivityFinished
+            )
+        }
+    }
+
     if (pendingSourceReselect != null) {
         val zh = strings.language == AppLanguage.ZH
         AlertDialog(
             onDismissRequest = { onSourceReselected(null) },
             title = { Text(if (zh) "授权删除原文件" else "Original file permission") },
             text = {
-                Text(if (zh) "尚未确认删除：${pendingSourceReselect.displayName}\n\n" +
-                    "请在系统文件中重新选择同一个原文件以授权删除，不要选择同名副本。云端或只读文件可能需要在原应用中手动删除。\n\n加密副本已保存，无需所有文件访问权限。"
-                    else "Deletion unconfirmed: ${pendingSourceReselect.displayName}\n\n" +
-                        "Reselect this exact original in Files to grant deletion. A same-name copy is not the original. Cloud or read-only sources may require deletion in their own app.\n\nEncrypted copy saved; no all-files permission needed.")
+                Text(
+                    if (zh) {
+                        "尚未确认删除：${pendingSourceReselect.displayName}\n\n" +
+                            if (!hasAllFilesAccess) {
+                                "当前尚未授予「全部文件管理权限」，系统提供方可能拒绝删除。建议立即开启全部文件权限，或在系统文件中重选同一个原文件以授权删除。"
+                            } else {
+                                "请在系统文件中重新选择同一个原文件以授权删除，不要选择同名副本。云端或只读提供方可能需要在原应用中手动删除。"
+                            }
+                    } else {
+                        "Deletion unconfirmed: ${pendingSourceReselect.displayName}\n\n" +
+                            if (!hasAllFilesAccess) {
+                                "All-files access is currently disabled, so system providers may block deletion. Grant all-files access, or reselect this exact original in Files."
+                            } else {
+                                "Reselect this exact original in Files to grant deletion. A same-name copy is not the original. Cloud or read-only sources may require deletion in their own app."
+                            }
+                    }
+                )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    try {
-                        sourceReselectLauncher.launchWithVaultGuard(
-                            pendingSourceReselect.originalUri,
-                            onExternalActivityStarted, onExternalActivityFinished
-                        )
-                    } catch (_: Exception) {
+                    if (!hasAllFilesAccess) {
                         onSourceReselected(null)
+                        requestAllFilesPermission()
+                    } else {
+                        try {
+                            sourceReselectLauncher.launchWithVaultGuard(
+                                pendingSourceReselect.originalUri,
+                                onExternalActivityStarted, onExternalActivityFinished
+                            )
+                        } catch (_: Exception) {
+                            onSourceReselected(null)
+                        }
                     }
-                }) { Text(if (zh) "选择原文件" else "Select original") }
+                }) {
+                    Text(
+                        if (!hasAllFilesAccess) strings.grantAllFilesBtn
+                        else if (zh) "选择原文件" else "Select original"
+                    )
+                }
             },
             dismissButton = {
                 TextButton(onClick = { onSourceReselected(null) }) { Text(if (zh) "保留原文件" else "Keep originals") }
@@ -632,6 +729,64 @@ fun VaultSpaceScreen(
                     onNewNoteClick = { showNewNoteDialog = true }
                 )
 
+                AnimatedVisibility(visible = !hasAllFilesAccess && !permissionBannerDismissed && !isSelectionMode) {
+                    Surface(
+                        color = VaultAmberWarning.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, VaultAmberWarning.copy(alpha = 0.45f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp)
+                            .testTag("all_files_permission_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FolderOpen,
+                                contentDescription = null,
+                                tint = VaultAmberWarning,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = strings.allFilesAccessMissingSub,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = CalcTextPrimary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                onClick = { requestAllFilesPermission() },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("banner_grant_all_files_button")
+                            ) {
+                                Text(
+                                    text = strings.grantAllFilesBtn,
+                                    color = VaultAccentPrimary,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1
+                                )
+                            }
+                            IconButton(
+                                onClick = { permissionBannerDismissed = true },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Dismiss",
+                                    tint = CalcTextSecondary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
@@ -747,7 +902,9 @@ fun VaultSpaceScreen(
                             onExternalActivityStarted,
                             onExternalActivityFinished
                         )
-                    }
+                    },
+                    hasAllFilesAccess = hasAllFilesAccess,
+                    onRequestAllFilesAccess = { requestAllFilesPermission() }
                 )
             }
         }
@@ -760,18 +917,27 @@ fun VaultSpaceScreen(
             containerColor = VaultSurface
         ) {
             VaultImportBottomSheetContent(
+                hasAllFilesAccess = hasAllFilesAccess,
                 isMoveAndWipeMode = isMoveAndWipeMode,
-                onToggleMoveMode = { isMoveAndWipeMode = it },
+                onRequestAllFilesAccess = { requestAllFilesPermission() },
+                onToggleMoveMode = { enabled ->
+                    if (enabled && !hasAllFilesAccess) {
+                        pendingAfterPermissionGranted = { isMoveAndWipeMode = true }
+                        showPermissionRequiredDialog = true
+                    } else {
+                        isMoveAndWipeMode = enabled
+                    }
+                },
                 onPickPhotosAndVideos = {
                     showImportSheet = false
-                    if (isMoveAndWipeMode) {
-                        // In Delete Original (Move) mode, use OpenMultipleDocuments for media so SAF grants
-                        // write/delete flags directly on the document URI, backed by MediaStore fallback.
-                        safDocumentsLauncher.launchWithVaultGuard(
-                            arrayOf("image/*", "video/*"),
-                            onExternalActivityStarted,
-                            onExternalActivityFinished
-                        )
+                    if (hasAllFilesAccess) {
+                        showLocalMediaPicker = true
+                    } else if (isMoveAndWipeMode) {
+                        pendingAfterPermissionGranted = {
+                            isMoveAndWipeMode = true
+                            showLocalMediaPicker = true
+                        }
+                        showPermissionRequiredDialog = true
                     } else {
                         photoPickerLauncher.launchWithVaultGuard(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
@@ -780,7 +946,25 @@ fun VaultSpaceScreen(
                         )
                     }
                 },
-                onPickAnyFilesSaf = {
+                onPickAnyFilesLocalOrSaf = {
+                    showImportSheet = false
+                    if (hasAllFilesAccess) {
+                        showLocalFileBrowser = true
+                    } else if (isMoveAndWipeMode) {
+                        pendingAfterPermissionGranted = {
+                            isMoveAndWipeMode = true
+                            showLocalFileBrowser = true
+                        }
+                        showPermissionRequiredDialog = true
+                    } else {
+                        safDocumentsLauncher.launchWithVaultGuard(
+                            arrayOf("*/*"),
+                            onExternalActivityStarted,
+                            onExternalActivityFinished
+                        )
+                    }
+                },
+                onPickSystemSaf = {
                     showImportSheet = false
                     safDocumentsLauncher.launchWithVaultGuard(
                         arrayOf("*/*"),
@@ -1011,6 +1195,55 @@ fun VaultSpaceScreen(
             onConfirm = { title, content ->
                 showNewNoteDialog = false
                 onCreateEncryptedNote(title, content)
+            }
+        )
+    }
+
+    if (showPermissionRequiredDialog) {
+        AllFilesPermissionRequiredDialog(
+            onDismiss = {
+                showPermissionRequiredDialog = false
+                pendingAfterPermissionGranted = null
+            },
+            onConfirmGrant = {
+                showPermissionRequiredDialog = false
+                val after = pendingAfterPermissionGranted ?: { isMoveAndWipeMode = true }
+                requestAllFilesPermission(after)
+            },
+            onContinueWithoutDelete = if (isMoveAndWipeMode) {
+                {
+                    showPermissionRequiredDialog = false
+                    pendingAfterPermissionGranted = null
+                    isMoveAndWipeMode = false
+                }
+            } else {
+                null
+            }
+        )
+    }
+
+    if (showLocalFileBrowser) {
+        LocalFileBrowserDialog(
+            isMoveAndWipeMode = isMoveAndWipeMode,
+            onDismiss = { showLocalFileBrowser = false },
+            onConfirmUris = { uris ->
+                showLocalFileBrowser = false
+                if (uris.isNotEmpty()) {
+                    onImportUris(uris, isMoveAndWipeMode)
+                }
+            }
+        )
+    }
+
+    if (showLocalMediaPicker) {
+        LocalMediaPickerDialog(
+            isMoveAndWipeMode = isMoveAndWipeMode,
+            onDismiss = { showLocalMediaPicker = false },
+            onConfirmUris = { uris ->
+                showLocalMediaPicker = false
+                if (uris.isNotEmpty()) {
+                    onImportUris(uris, isMoveAndWipeMode)
+                }
             }
         )
     }
@@ -1739,10 +1972,13 @@ private fun EmptyVaultDirectoryCard(
 
 @Composable
 private fun VaultImportBottomSheetContent(
+    hasAllFilesAccess: Boolean,
     isMoveAndWipeMode: Boolean,
+    onRequestAllFilesAccess: () -> Unit,
     onToggleMoveMode: (Boolean) -> Unit,
     onPickPhotosAndVideos: () -> Unit,
-    onPickAnyFilesSaf: () -> Unit,
+    onPickAnyFilesLocalOrSaf: () -> Unit,
+    onPickSystemSaf: () -> Unit,
     onCreateNewFolder: () -> Unit,
     onCreateEncryptedNote: () -> Unit
 ) {
@@ -1760,6 +1996,50 @@ private fun VaultImportBottomSheetContent(
             style = MaterialTheme.typography.titleLarge,
             color = CalcTextPrimary
         )
+
+        Surface(
+            onClick = { if (!hasAllFilesAccess) onRequestAllFilesAccess() },
+            enabled = !hasAllFilesAccess,
+            color = if (hasAllFilesAccess) VaultEmeraldSuccess.copy(alpha = 0.12f) else VaultAmberWarning.copy(alpha = 0.14f),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(
+                1.dp,
+                if (hasAllFilesAccess) VaultEmeraldSuccess.copy(alpha = 0.4f) else VaultAmberWarning.copy(alpha = 0.5f)
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("import_all_files_status_card")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = if (hasAllFilesAccess) Icons.Default.CheckCircle else Icons.Default.FolderOpen,
+                    contentDescription = null,
+                    tint = if (hasAllFilesAccess) VaultEmeraldSuccess else VaultAmberWarning,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = if (hasAllFilesAccess) strings.allFilesAccessImportGrantedTip else strings.allFilesAccessImportMissingTip,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (hasAllFilesAccess) VaultEmeraldSuccess else VaultAmberWarning,
+                    modifier = Modifier.weight(1f)
+                )
+                if (!hasAllFilesAccess) {
+                    Text(
+                        text = strings.grantAllFilesBtn,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = VaultAccentPrimary,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
 
         Surface(
             color = VaultSurfaceElevated,
@@ -1817,7 +2097,7 @@ private fun VaultImportBottomSheetContent(
         }
 
         Button(
-            onClick = onPickAnyFilesSaf,
+            onClick = onPickAnyFilesLocalOrSaf,
             shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = VaultSurfaceElevated,
@@ -1831,6 +2111,22 @@ private fun VaultImportBottomSheetContent(
             Icon(Icons.Default.UploadFile, contentDescription = null, tint = VaultAccentPrimary, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(8.dp))
             Text(strings.safDocumentPickerBtn, fontWeight = FontWeight.Medium, maxLines = 1)
+        }
+
+        if (hasAllFilesAccess) {
+            TextButton(
+                onClick = onPickSystemSaf,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("import_system_saf_button")
+            ) {
+                Text(
+                    text = strings.safSystemPickerBtn,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = CalcTextSecondary,
+                    maxLines = 1
+                )
+            }
         }
 
         Row(

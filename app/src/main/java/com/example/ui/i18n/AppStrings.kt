@@ -112,6 +112,17 @@ data class AppStrings(
     val confirmDeleteBtn: String,
     val keepOriginalsBtn: String,
 
+    // All Files Access Permission & Picker Options
+    val allFilesAccessTitle: String,
+    val allFilesAccessGrantedSub: String,
+    val allFilesAccessMissingSub: String,
+    val allFilesAccessImportGrantedTip: String,
+    val allFilesAccessImportMissingTip: String,
+    val grantAllFilesBtn: String,
+    val grantedBadge: String,
+    val missingBadge: String,
+    val safSystemPickerBtn: String,
+
     // Security & Multi-Space Tab
     val languageCardTitle: String,
     val languageCardSubtitle: String,
@@ -257,6 +268,16 @@ val ChineseAppStrings = AppStrings(
     confirmDeleteBtn = "删除原文件",
     keepOriginalsBtn = "保留原文件",
 
+    allFilesAccessTitle = "全部文件管理权限",
+    allFilesAccessGrantedSub = "已开启，可直接浏览本地目录并在导入后彻底删除原文件",
+    allFilesAccessMissingSub = "未开启，部分相册/下载/文档原文件可能无法删除",
+    allFilesAccessImportGrantedTip = "已获取全部文件管理权限 · 支持彻底删除原文件",
+    allFilesAccessImportMissingTip = "未授予全部文件管理权限 · 点击立即开启以支持彻底删原文件",
+    grantAllFilesBtn = "开启权限",
+    grantedBadge = "已开启",
+    missingBadge = "未授权",
+    safSystemPickerBtn = "通过系统文件选择器导入 (SAF / 网盘)",
+
     languageCardTitle = "界面语言",
     languageCardSubtitle = "切换中文 / English",
     rootWarningTitle = "设备环境风险提示",
@@ -399,6 +420,16 @@ val EnglishAppStrings = AppStrings(
     },
     confirmDeleteBtn = "Delete Originals",
     keepOriginalsBtn = "Keep Originals",
+
+    allFilesAccessTitle = "All Files Management",
+    allFilesAccessGrantedSub = "Granted. Browse local storage and reliably delete originals after import",
+    allFilesAccessMissingSub = "Not granted. Deleting original photos, downloads, or docs may be blocked",
+    allFilesAccessImportGrantedTip = "All files access active · Originals can be permanently deleted",
+    allFilesAccessImportMissingTip = "All files access needed · Tap to grant for reliable original deletion",
+    grantAllFilesBtn = "Grant",
+    grantedBadge = "Granted",
+    missingBadge = "Required",
+    safSystemPickerBtn = "System Picker (SAF / Cloud)",
 
     languageCardTitle = "Language",
     languageCardSubtitle = "Switch between 简体中文 and English",
