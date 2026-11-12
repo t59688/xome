@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.Restore
@@ -101,7 +103,9 @@ fun VaultSecuritySettingsTab(
     onLaunchKeyfilePicker: ((android.net.Uri?) -> Unit) -> Unit,
     onExportSelfHealingArchive: () -> Unit,
     onImportSelfHealingArchive: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    hasAllFilesAccess: Boolean = false,
+    onRequestAllFilesAccess: () -> Unit = {}
 ) {
     val strings = LocalAppStrings.current
 
@@ -126,14 +130,16 @@ fun VaultSecuritySettingsTab(
             totalPlainBytes = totalPlainBytes
         )
 
-        // 2. Language & Screenshot Protection Card
+        // 2. Language, File Access & Screenshot Protection Card
         LanguageAndPrivacyCard(
             currentLanguage = strings.language,
             report = securityReport,
             flagSecureEnabled = flagSecureEnabled,
             isStreamingEmulator = isStreamingEmulator,
+            hasAllFilesAccess = hasAllFilesAccess,
             onSelectLanguage = onSelectLanguage,
-            onToggleFlagSecure = onToggleFlagSecure
+            onToggleFlagSecure = onToggleFlagSecure,
+            onRequestAllFilesAccess = onRequestAllFilesAccess
         )
 
         // Reveal only one task at a time: details and secrets live in the dedicated wizard.
@@ -292,8 +298,10 @@ private fun LanguageAndPrivacyCard(
     report: RootSecurityDetector.EnvironmentSecurityReport,
     flagSecureEnabled: Boolean,
     isStreamingEmulator: Boolean,
+    hasAllFilesAccess: Boolean,
     onSelectLanguage: (AppLanguage) -> Unit,
-    onToggleFlagSecure: (Boolean) -> Unit
+    onToggleFlagSecure: (Boolean) -> Unit,
+    onRequestAllFilesAccess: () -> Unit
 ) {
     val strings = LocalAppStrings.current
 
@@ -407,6 +415,73 @@ private fun LanguageAndPrivacyCard(
                     colors = SwitchDefaults.colors(checkedThumbColor = VaultEmeraldSuccess),
                     modifier = Modifier.testTag("flag_secure_switch")
                 )
+            }
+
+            // Full file management access row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("all_files_permission_settings_row"),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FolderOpen,
+                        contentDescription = null,
+                        tint = if (hasAllFilesAccess) VaultEmeraldSuccess else VaultAmberWarning,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Column {
+                        Text(
+                            text = strings.allFilesAccessTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = CalcTextPrimary
+                        )
+                        Text(
+                            text = if (hasAllFilesAccess) strings.allFilesAccessGrantedSub else strings.allFilesAccessMissingSub,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CalcTextSecondary
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                if (hasAllFilesAccess) {
+                    Surface(
+                        color = VaultEmeraldSuccess.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = strings.grantedBadge,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = VaultEmeraldSuccess,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                } else {
+                    Button(
+                        onClick = onRequestAllFilesAccess,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = VaultAccentPrimary,
+                            contentColor = Color(0xFF06202B)
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("settings_grant_all_files_button")
+                    ) {
+                        Text(
+                            text = strings.grantAllFilesBtn,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+                }
             }
         }
     }
