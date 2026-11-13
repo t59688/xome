@@ -16,15 +16,22 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -70,6 +77,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -84,6 +92,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -91,6 +100,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
 import com.example.storage.AllFilesPermissionHelper
 import com.example.storage.VaultStorageManager
 import com.example.ui.i18n.AppLanguage
@@ -254,8 +265,30 @@ internal fun LocalFileBrowserDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
+        val view = LocalView.current
+        SideEffect {
+            val window = (view.parent as? DialogWindowProvider)?.window
+            window?.let { w ->
+                WindowCompat.setDecorFitsSystemWindows(w, false)
+                w.statusBarColor = android.graphics.Color.TRANSPARENT
+                w.navigationBarColor = android.graphics.Color.TRANSPARENT
+                w.setLayout(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                WindowCompat.getInsetsController(w, w.decorView).apply {
+                    isAppearanceLightStatusBars = false
+                    isAppearanceLightNavigationBars = false
+                }
+            }
+        }
+
         Surface(
             color = VaultVoidBg,
             modifier = Modifier
@@ -265,14 +298,15 @@ internal fun LocalFileBrowserDialog(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
+                    .imePadding()
             ) {
                 // Header
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(VaultSurface)
+                        .statusBarsPadding()
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -433,13 +467,32 @@ internal fun LocalFileBrowserDialog(
                 Spacer(modifier = Modifier.height(6.dp))
 
                 // Directory list
-                Box(modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
                     when {
                         isLoading -> {
-                            CircularProgressIndicator(
-                                color = VaultAccentPrimary,
-                                modifier = Modifier.align(Alignment.Center)
-                            )
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(horizontal = 24.dp, vertical = 32.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    color = VaultAccentPrimary,
+                                    strokeWidth = 3.dp,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                Text(
+                                    text = if (zh) "正在读取目录..." else "Reading folder...",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = CalcTextSecondary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
                         }
                         visibleEntries.isEmpty() -> {
                             Text(
@@ -484,51 +537,60 @@ internal fun LocalFileBrowserDialog(
 
                 // Bottom confirmation bar
                 HorizontalDivider(color = VaultBorderSubtle)
-                Surface(color = VaultSurface, modifier = Modifier.fillMaxWidth()) {
-                    Row(
+                Surface(
+                    color = VaultSurface,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .windowInsetsPadding(WindowInsets.navigationBars)
                     ) {
-                        val totalBytes = selectedSizesByPath.values.sum()
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = if (zh) "已选择 ${selectedSizesByPath.size} 个文件"
-                                else "${selectedSizesByPath.size} file(s) selected",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = CalcTextPrimary
-                            )
-                            Text(
-                                text = if (selectedSizesByPath.isEmpty()) {
-                                    if (zh) "点选文件，点击文件夹进入浏览" else "Tap files to select or folders to open"
-                                } else {
-                                    formatByteSize(totalBytes)
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = CalcTextSecondary
-                            )
-                        }
-                        Button(
-                            onClick = {
-                                val uris = selectedSizesByPath.keys.map { Uri.fromFile(File(it)) }
-                                onConfirmUris(uris)
-                            },
-                            enabled = selectedSizesByPath.isNotEmpty(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isMoveAndWipeMode) CalcAccentCopper else VaultAccentPrimary,
-                                contentColor = Color(0xFF06202B)
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.testTag("local_browser_confirm_button")
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text(
-                                text = if (zh) "导入 (${selectedSizesByPath.size})"
-                                else "Import (${selectedSizesByPath.size})",
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1
-                            )
+                            val totalBytes = selectedSizesByPath.values.sum()
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (zh) "已选择 ${selectedSizesByPath.size} 个文件"
+                                    else "${selectedSizesByPath.size} file(s) selected",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = CalcTextPrimary
+                                )
+                                Text(
+                                    text = if (selectedSizesByPath.isEmpty()) {
+                                        if (zh) "点选文件，点击文件夹进入浏览" else "Tap files to select or folders to open"
+                                    } else {
+                                        formatByteSize(totalBytes)
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CalcTextSecondary
+                                )
+                            }
+                            Button(
+                                onClick = {
+                                    val uris = selectedSizesByPath.keys.map { Uri.fromFile(File(it)) }
+                                    onConfirmUris(uris)
+                                },
+                                enabled = selectedSizesByPath.isNotEmpty(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isMoveAndWipeMode) CalcAccentCopper else VaultAccentPrimary,
+                                    contentColor = Color(0xFF06202B)
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.testTag("local_browser_confirm_button")
+                            ) {
+                                Text(
+                                    text = if (zh) "导入 (${selectedSizesByPath.size})"
+                                    else "Import (${selectedSizesByPath.size})",
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }
@@ -656,8 +718,30 @@ internal fun LocalMediaPickerDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
+        val view = LocalView.current
+        SideEffect {
+            val window = (view.parent as? DialogWindowProvider)?.window
+            window?.let { w ->
+                WindowCompat.setDecorFitsSystemWindows(w, false)
+                w.statusBarColor = android.graphics.Color.TRANSPARENT
+                w.navigationBarColor = android.graphics.Color.TRANSPARENT
+                w.setLayout(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                )
+                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                WindowCompat.getInsetsController(w, w.decorView).apply {
+                    isAppearanceLightStatusBars = false
+                    isAppearanceLightNavigationBars = false
+                }
+            }
+        }
+
         Surface(
             color = VaultVoidBg,
             modifier = Modifier
@@ -667,13 +751,14 @@ internal fun LocalMediaPickerDialog(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
+                    .imePadding()
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(VaultSurface)
+                        .statusBarsPadding()
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -754,13 +839,32 @@ internal fun LocalMediaPickerDialog(
                     }
                 }
 
-                Box(modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
                     when {
                         isLoading -> {
-                            CircularProgressIndicator(
-                                color = VaultAccentPrimary,
-                                modifier = Modifier.align(Alignment.Center)
-                            )
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(horizontal = 24.dp, vertical = 32.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    color = VaultAccentPrimary,
+                                    strokeWidth = 3.dp,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                Text(
+                                    text = if (zh) "正在扫描照片与视频..." else "Scanning photos & videos...",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = CalcTextSecondary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
                         }
                         visibleItems.isEmpty() -> {
                             Text(
@@ -798,46 +902,55 @@ internal fun LocalMediaPickerDialog(
                 }
 
                 HorizontalDivider(color = VaultBorderSubtle)
-                Surface(color = VaultSurface, modifier = Modifier.fillMaxWidth()) {
-                    Row(
+                Surface(
+                    color = VaultSurface,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .windowInsetsPadding(WindowInsets.navigationBars)
                     ) {
-                        val totalBytes = selectedItemsByUri.values.sum()
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = if (zh) "已选 ${selectedItemsByUri.size} 项媒体"
-                                else "${selectedItemsByUri.size} item(s) selected",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = CalcTextPrimary
-                            )
-                            if (selectedItemsByUri.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            val totalBytes = selectedItemsByUri.values.sum()
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = formatByteSize(totalBytes),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = CalcTextSecondary
+                                    text = if (zh) "已选 ${selectedItemsByUri.size} 项媒体"
+                                    else "${selectedItemsByUri.size} item(s) selected",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = CalcTextPrimary
+                                )
+                                if (selectedItemsByUri.isNotEmpty()) {
+                                    Text(
+                                        text = formatByteSize(totalBytes),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = CalcTextSecondary
+                                    )
+                                }
+                            }
+                            Button(
+                                onClick = { onConfirmUris(selectedItemsByUri.keys.toList()) },
+                                enabled = selectedItemsByUri.isNotEmpty(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isMoveAndWipeMode) CalcAccentCopper else VaultAccentPrimary,
+                                    contentColor = Color(0xFF06202B)
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.testTag("local_media_confirm_button")
+                            ) {
+                                Text(
+                                    text = if (zh) "导入 (${selectedItemsByUri.size})"
+                                    else "Import (${selectedItemsByUri.size})",
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1
                                 )
                             }
-                        }
-                        Button(
-                            onClick = { onConfirmUris(selectedItemsByUri.keys.toList()) },
-                            enabled = selectedItemsByUri.isNotEmpty(),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isMoveAndWipeMode) CalcAccentCopper else VaultAccentPrimary,
-                                contentColor = Color(0xFF06202B)
-                            ),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.testTag("local_media_confirm_button")
-                        ) {
-                            Text(
-                                text = if (zh) "导入 (${selectedItemsByUri.size})"
-                                else "Import (${selectedItemsByUri.size})",
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1
-                            )
                         }
                     }
                 }
