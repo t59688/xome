@@ -528,8 +528,9 @@ fun VaultSpaceScreen(
         callback?.invoke(uri)
     }
 
-    Scaffold(
-        containerColor = VaultVoidBg,
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            containerColor = VaultVoidBg,
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             if (selectedTab == 0 && isSelectionMode) {
@@ -1248,6 +1249,7 @@ fun VaultSpaceScreen(
             }
         )
     }
+}
 }
 
 @Composable

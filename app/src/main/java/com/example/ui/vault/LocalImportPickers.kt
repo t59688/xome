@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -72,6 +73,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -263,282 +265,194 @@ internal fun LocalFileBrowserDialog(
 
     val dateFormatter = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
+    Surface(
+        color = VaultVoidBg,
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("local_file_browser_dialog")
     ) {
-        val view = LocalView.current
-        SideEffect {
-            val window = (view.parent as? DialogWindowProvider)?.window
-            window?.let { w ->
-                WindowCompat.setDecorFitsSystemWindows(w, false)
-                w.statusBarColor = android.graphics.Color.TRANSPARENT
-                w.navigationBarColor = android.graphics.Color.TRANSPARENT
-                w.setLayout(
-                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                WindowCompat.getInsetsController(w, w.decorView).apply {
-                    isAppearanceLightStatusBars = false
-                    isAppearanceLightNavigationBars = false
-                }
-            }
-        }
-
-        Surface(
-            color = VaultVoidBg,
-            modifier = Modifier
-                .fillMaxSize()
-                .testTag("local_file_browser_dialog")
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
-                    .imePadding()
-            ) {
-                // Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(VaultSurface)
-                        .statusBarsPadding()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+        Scaffold(
+            containerColor = VaultVoidBg,
+            contentWindowInsets = WindowInsets.safeDrawing,
+            topBar = {
+                Surface(
+                    color = VaultSurface,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        IconButton(onClick = onDismiss) {
-                            Icon(Icons.Default.Close, contentDescription = null, tint = CalcTextPrimary)
-                        }
-                        Column {
-                            Text(
-                                text = if (zh) "选择本地文件" else "Select Local Files",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = CalcTextPrimary
-                            )
-                            if (isMoveAndWipeMode) {
-                                Text(
-                                    text = if (zh) "导入后将彻底删除所选原文件" else "Originals will be deleted after encryption",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = CalcAccentCopper
-                                )
-                            }
-                        }
-                    }
-
-                    if (visibleFiles.isNotEmpty()) {
-                        TextButton(
-                            onClick = {
-                                if (allVisibleFilesSelected) {
-                                    visibleFiles.forEach { selectedSizesByPath.remove(it.file.absolutePath) }
-                                } else {
-                                    visibleFiles.forEach { selectedSizesByPath[it.file.absolutePath] = it.sizeBytes }
-                                }
-                            }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.SelectAll,
-                                contentDescription = null,
-                                tint = VaultAccentPrimary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = if (allVisibleFilesSelected) {
-                                    if (zh) "取消全选" else "Deselect"
-                                } else {
-                                    if (zh) "全选文件" else "Select All"
-                                },
-                                color = VaultAccentPrimary
-                            )
-                        }
-                    }
-                }
-
-                // Shortcuts row
-                if (shortcuts.isNotEmpty()) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            .statusBarsPadding()
                     ) {
-                        shortcuts.forEach { shortcut ->
-                            val isSelected = currentDir.absolutePath == shortcut.directory.absolutePath
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = {
-                                    searchFilter = ""
-                                    currentDir = shortcut.directory
-                                },
-                                label = {
-                                    Text(
-                                        text = if (zh) shortcut.labelZh else shortcut.labelEn,
-                                        maxLines = 1
-                                    )
-                                },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = VaultAccentPrimary,
-                                    selectedLabelColor = Color(0xFF06202B)
-                                )
-                            )
-                        }
-                    }
-                }
-
-                // Current path + Up button + Search
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Surface(
-                        color = VaultSurfaceElevated,
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, VaultBorderSubtle),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                        // Header
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            IconButton(
-                                onClick = { currentDir.parentFile?.let { currentDir = it } },
-                                enabled = canGoUp,
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = if (zh) "上一级" else "Up",
-                                    tint = if (canGoUp) VaultAccentPrimary else CalcTextMuted,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                            Text(
-                                text = currentDir.absolutePath,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = CalcTextSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = searchFilter,
-                        onValueChange = { searchFilter = it },
-                        placeholder = {
-                            Text(
-                                text = if (zh) "过滤当前目录文件名..." else "Filter current folder...",
-                                color = CalcTextMuted,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null, tint = CalcTextMuted, modifier = Modifier.size(18.dp))
-                        },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = VaultAccentPrimary,
-                            unfocusedBorderColor = VaultBorderSubtle,
-                            focusedTextColor = CalcTextPrimary,
-                            unfocusedTextColor = CalcTextPrimary
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                // Directory list
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                ) {
-                    when {
-                        isLoading -> {
-                            Column(
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(horizontal = 24.dp, vertical = 32.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
-                                CircularProgressIndicator(
-                                    color = VaultAccentPrimary,
-                                    strokeWidth = 3.dp,
-                                    modifier = Modifier.size(40.dp)
-                                )
-                                Text(
-                                    text = if (zh) "正在读取目录..." else "Reading folder...",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = CalcTextSecondary,
-                                    fontWeight = FontWeight.Medium
-                                )
+                                IconButton(onClick = onDismiss) {
+                                    Icon(Icons.Default.Close, contentDescription = null, tint = CalcTextPrimary)
+                                }
+                                Column {
+                                    Text(
+                                        text = if (zh) "选择本地文件" else "Select Local Files",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = CalcTextPrimary
+                                    )
+                                    if (isMoveAndWipeMode) {
+                                        Text(
+                                            text = if (zh) "导入后将彻底删除所选原文件" else "Originals will be deleted after encryption",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = CalcAccentCopper
+                                        )
+                                    }
+                                }
                             }
-                        }
-                        visibleEntries.isEmpty() -> {
-                            Text(
-                                text = if (zh) "当前目录没有可选文件" else "No files in this directory",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = CalcTextMuted,
-                                modifier = Modifier.align(Alignment.Center)
-                            )
-                        }
-                        else -> {
-                            LazyColumn(
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier.fillMaxSize()
-                            ) {
-                                items(visibleEntries, key = { it.file.absolutePath }) { entry ->
-                                    val isChecked = selectedSizesByPath.containsKey(entry.file.absolutePath)
-                                    LocalEntryRow(
-                                        entry = entry,
-                                        isChecked = isChecked,
-                                        formattedDate = dateFormatter.format(Date(entry.lastModifiedMs)),
-                                        zh = zh,
-                                        onClick = {
-                                            if (entry.isDirectory) {
-                                                searchFilter = ""
-                                                currentDir = entry.file
-                                            } else {
-                                                val path = entry.file.absolutePath
-                                                if (selectedSizesByPath.containsKey(path)) {
-                                                    selectedSizesByPath.remove(path)
-                                                } else {
-                                                    selectedSizesByPath[path] = entry.sizeBytes
-                                                }
-                                            }
+
+                            if (visibleFiles.isNotEmpty()) {
+                                TextButton(
+                                    onClick = {
+                                        if (allVisibleFilesSelected) {
+                                            visibleFiles.forEach { selectedSizesByPath.remove(it.file.absolutePath) }
+                                        } else {
+                                            visibleFiles.forEach { selectedSizesByPath[it.file.absolutePath] = it.sizeBytes }
                                         }
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SelectAll,
+                                        contentDescription = null,
+                                        tint = VaultAccentPrimary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (allVisibleFilesSelected) {
+                                            if (zh) "取消全选" else "Deselect"
+                                        } else {
+                                            if (zh) "全选文件" else "Select All"
+                                        },
+                                        color = VaultAccentPrimary
                                     )
                                 }
                             }
                         }
+
+                        // Shortcuts row
+                        if (shortcuts.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                shortcuts.forEach { shortcut ->
+                                    val isSelected = currentDir.absolutePath == shortcut.directory.absolutePath
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = {
+                                            searchFilter = ""
+                                            currentDir = shortcut.directory
+                                        },
+                                        label = {
+                                            Text(
+                                                text = if (zh) shortcut.labelZh else shortcut.labelEn,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = VaultAccentPrimary,
+                                            selectedLabelColor = Color(0xFF06202B)
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        // Current path + Up button + Search
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                color = VaultSurfaceElevated,
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, VaultBorderSubtle),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { currentDir.parentFile?.let { currentDir = it } },
+                                        enabled = canGoUp,
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                            contentDescription = if (zh) "上一级" else "Up",
+                                            tint = if (canGoUp) VaultAccentPrimary else CalcTextMuted,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = currentDir.absolutePath,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = CalcTextSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+
+                            OutlinedTextField(
+                                value = searchFilter,
+                                onValueChange = { searchFilter = it },
+                                placeholder = {
+                                    Text(
+                                        text = if (zh) "过滤当前目录文件名..." else "Filter current folder...",
+                                        color = CalcTextMuted,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Search, contentDescription = null, tint = CalcTextMuted, modifier = Modifier.size(18.dp))
+                                },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = VaultAccentPrimary,
+                                    unfocusedBorderColor = VaultBorderSubtle,
+                                    focusedTextColor = CalcTextPrimary,
+                                    unfocusedTextColor = CalcTextPrimary
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        HorizontalDivider(color = VaultBorderSubtle)
                     }
                 }
-
-                // Bottom confirmation bar
-                HorizontalDivider(color = VaultBorderSubtle)
+            },
+            bottomBar = {
                 Surface(
                     color = VaultSurface,
+                    border = BorderStroke(1.dp, VaultBorderSubtle),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -589,6 +503,74 @@ internal fun LocalFileBrowserDialog(
                                     else "Import (${selectedSizesByPath.size})",
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                when {
+                    isLoading -> {
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(horizontal = 24.dp, vertical = 32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = VaultAccentPrimary,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Text(
+                                text = if (zh) "正在读取目录..." else "Reading folder...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = CalcTextSecondary,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                    visibleEntries.isEmpty() -> {
+                        Text(
+                            text = if (zh) "当前目录没有可选文件" else "No files in this directory",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = CalcTextMuted,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                    else -> {
+                        LazyColumn(
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(visibleEntries, key = { it.file.absolutePath }) { entry ->
+                                val isChecked = selectedSizesByPath.containsKey(entry.file.absolutePath)
+                                LocalEntryRow(
+                                    entry = entry,
+                                    isChecked = isChecked,
+                                    formattedDate = dateFormatter.format(Date(entry.lastModifiedMs)),
+                                    zh = zh,
+                                    onClick = {
+                                        if (entry.isDirectory) {
+                                            searchFilter = ""
+                                            currentDir = entry.file
+                                        } else {
+                                            val path = entry.file.absolutePath
+                                            if (selectedSizesByPath.containsKey(path)) {
+                                                selectedSizesByPath.remove(path)
+                                            } else {
+                                                selectedSizesByPath[path] = entry.sizeBytes
+                                            }
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -716,194 +698,115 @@ internal fun LocalMediaPickerDialog(
 
     BackHandler(onBack = onDismiss)
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
+    Surface(
+        color = VaultVoidBg,
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("local_media_picker_dialog")
     ) {
-        val view = LocalView.current
-        SideEffect {
-            val window = (view.parent as? DialogWindowProvider)?.window
-            window?.let { w ->
-                WindowCompat.setDecorFitsSystemWindows(w, false)
-                w.statusBarColor = android.graphics.Color.TRANSPARENT
-                w.navigationBarColor = android.graphics.Color.TRANSPARENT
-                w.setLayout(
-                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                w.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                WindowCompat.getInsetsController(w, w.decorView).apply {
-                    isAppearanceLightStatusBars = false
-                    isAppearanceLightNavigationBars = false
-                }
-            }
-        }
-
-        Surface(
-            color = VaultVoidBg,
-            modifier = Modifier
-                .fillMaxSize()
-                .testTag("local_media_picker_dialog")
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
-                    .imePadding()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(VaultSurface)
-                        .statusBarsPadding()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+        Scaffold(
+            containerColor = VaultVoidBg,
+            contentWindowInsets = WindowInsets.safeDrawing,
+            topBar = {
+                Surface(
+                    color = VaultSurface,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.weight(1f)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .statusBarsPadding()
                     ) {
-                        IconButton(onClick = onDismiss) {
-                            Icon(Icons.Default.Close, contentDescription = null, tint = CalcTextPrimary)
-                        }
-                        Column {
-                            Text(
-                                text = if (zh) "选择照片与视频" else "Select Photos & Videos",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = CalcTextPrimary
-                            )
-                            if (isMoveAndWipeMode) {
-                                Text(
-                                    text = if (zh) "导入后将彻底删除所选原媒体文件" else "Original media files will be deleted after import",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = CalcAccentCopper
-                                )
-                            }
-                        }
-                    }
-
-                    if (visibleItems.isNotEmpty()) {
-                        TextButton(
-                            onClick = {
-                                if (allVisibleSelected) {
-                                    visibleItems.forEach { selectedItemsByUri.remove(it.mediaUri) }
-                                } else {
-                                    visibleItems.forEach { selectedItemsByUri[it.mediaUri] = it.sizeBytes }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                IconButton(onClick = onDismiss) {
+                                    Icon(Icons.Default.Close, contentDescription = null, tint = CalcTextPrimary)
+                                }
+                                Column {
+                                    Text(
+                                        text = if (zh) "选择照片与视频" else "Select Photos & Videos",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = CalcTextPrimary
+                                    )
+                                    if (isMoveAndWipeMode) {
+                                        Text(
+                                            text = if (zh) "导入后将彻底删除所选原媒体文件" else "Original media files will be deleted after import",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = CalcAccentCopper
+                                        )
+                                    }
                                 }
                             }
-                        ) {
-                            Text(
-                                text = if (allVisibleSelected) {
-                                    if (zh) "取消全选" else "Deselect"
-                                } else {
-                                    if (zh) "全选" else "Select All"
-                                },
-                                color = VaultAccentPrimary
-                            )
-                        }
-                    }
-                }
 
-                if (buckets.isNotEmpty()) {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        item {
-                            FilterChip(
-                                selected = selectedBucket == null,
-                                onClick = { selectedBucket = null },
-                                label = { Text(if (zh) "全部 (${allItems.size})" else "All (${allItems.size})") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = VaultAccentPrimary,
-                                    selectedLabelColor = Color(0xFF06202B)
-                                )
-                            )
-                        }
-                        items(buckets, key = { it.first }) { (bucket, count) ->
-                            FilterChip(
-                                selected = selectedBucket == bucket,
-                                onClick = { selectedBucket = bucket },
-                                label = { Text("$bucket ($count)", maxLines = 1) },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = VaultAccentPrimary,
-                                    selectedLabelColor = Color(0xFF06202B)
-                                )
-                            )
-                        }
-                    }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                ) {
-                    when {
-                        isLoading -> {
-                            Column(
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(horizontal = 24.dp, vertical = 32.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(14.dp)
-                            ) {
-                                CircularProgressIndicator(
-                                    color = VaultAccentPrimary,
-                                    strokeWidth = 3.dp,
-                                    modifier = Modifier.size(40.dp)
-                                )
-                                Text(
-                                    text = if (zh) "正在扫描照片与视频..." else "Scanning photos & videos...",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = CalcTextSecondary,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                        }
-                        visibleItems.isEmpty() -> {
-                            Text(
-                                text = if (zh) "未发现照片或视频" else "No photos or videos found",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = CalcTextMuted,
-                                modifier = Modifier.align(Alignment.Center)
-                            )
-                        }
-                        else -> {
-                            LazyVerticalGrid(
-                                columns = GridCells.Fixed(3),
-                                contentPadding = PaddingValues(6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier.fillMaxSize()
-                            ) {
-                                items(visibleItems, key = { it.mediaUri.toString() }) { item ->
-                                    val selected = selectedItemsByUri.containsKey(item.mediaUri)
-                                    LocalMediaGridCell(
-                                        item = item,
-                                        selected = selected,
-                                        onToggle = {
-                                            if (selected) {
-                                                selectedItemsByUri.remove(item.mediaUri)
-                                            } else {
-                                                selectedItemsByUri[item.mediaUri] = item.sizeBytes
-                                            }
+                            if (visibleItems.isNotEmpty()) {
+                                TextButton(
+                                    onClick = {
+                                        if (allVisibleSelected) {
+                                            visibleItems.forEach { selectedItemsByUri.remove(it.mediaUri) }
+                                        } else {
+                                            visibleItems.forEach { selectedItemsByUri[it.mediaUri] = it.sizeBytes }
                                         }
+                                    }
+                                ) {
+                                    Text(
+                                        text = if (allVisibleSelected) {
+                                            if (zh) "取消全选" else "Deselect"
+                                        } else {
+                                            if (zh) "全选" else "Select All"
+                                        },
+                                        color = VaultAccentPrimary
                                     )
                                 }
                             }
                         }
+
+                        if (buckets.isNotEmpty()) {
+                            LazyRow(
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                item {
+                                    FilterChip(
+                                        selected = selectedBucket == null,
+                                        onClick = { selectedBucket = null },
+                                        label = { Text(if (zh) "全部 (${allItems.size})" else "All (${allItems.size})") },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = VaultAccentPrimary,
+                                            selectedLabelColor = Color(0xFF06202B)
+                                        )
+                                    )
+                                }
+                                items(buckets, key = { it.first }) { (bucket, count) ->
+                                    FilterChip(
+                                        selected = selectedBucket == bucket,
+                                        onClick = { selectedBucket = bucket },
+                                        label = { Text("$bucket ($count)", maxLines = 1) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = VaultAccentPrimary,
+                                            selectedLabelColor = Color(0xFF06202B)
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        HorizontalDivider(color = VaultBorderSubtle)
                     }
                 }
-
-                HorizontalDivider(color = VaultBorderSubtle)
+            },
+            bottomBar = {
                 Surface(
                     color = VaultSurface,
+                    border = BorderStroke(1.dp, VaultBorderSubtle),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -949,6 +852,68 @@ internal fun LocalMediaPickerDialog(
                                     else "Import (${selectedItemsByUri.size})",
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                when {
+                    isLoading -> {
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(horizontal = 24.dp, vertical = 32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = VaultAccentPrimary,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Text(
+                                text = if (zh) "正在扫描照片与视频..." else "Scanning photos & videos...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = CalcTextSecondary,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                    visibleItems.isEmpty() -> {
+                        Text(
+                            text = if (zh) "未发现照片或视频" else "No photos or videos found",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = CalcTextMuted,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                    else -> {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(3),
+                            contentPadding = PaddingValues(6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            items(visibleItems, key = { it.mediaUri.toString() }) { item ->
+                                val selected = selectedItemsByUri.containsKey(item.mediaUri)
+                                LocalMediaGridCell(
+                                    item = item,
+                                    selected = selected,
+                                    onToggle = {
+                                        if (selected) {
+                                            selectedItemsByUri.remove(item.mediaUri)
+                                        } else {
+                                            selectedItemsByUri[item.mediaUri] = item.sizeBytes
+                                        }
+                                    }
                                 )
                             }
                         }
