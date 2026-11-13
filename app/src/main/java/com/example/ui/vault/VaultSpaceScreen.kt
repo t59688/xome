@@ -37,6 +37,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -1333,14 +1334,18 @@ private fun VaultBatchActionBar(
             .fillMaxWidth()
             .testTag("vault_batch_action_bar")
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
+                .windowInsetsPadding(WindowInsets.navigationBars)
         ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             BatchActionButton(
                 icon = Icons.Default.ContentCopy,
                 label = strings.copyToBtn,
@@ -1379,6 +1384,7 @@ private fun VaultBatchActionBar(
             )
         }
     }
+}
 }
 
 @Composable

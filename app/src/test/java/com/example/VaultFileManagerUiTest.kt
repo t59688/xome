@@ -372,6 +372,21 @@ class VaultFileManagerUiTest {
 
             compose.onNodeWithTag("import_saf_files_button").performClick()
             compose.onNodeWithTag("local_file_browser_dialog").assertIsDisplayed()
+            compose.onNodeWithTag("local_browser_confirm_button").assertIsDisplayed()
+        } finally {
+            AllFilesPermissionHelper.testAllFilesAccessOverride = null
+        }
+    }
+
+    @Test
+    fun `granted all files access opens built-in local media picker and displays confirmation button`() {
+        AllFilesPermissionHelper.testAllFilesAccessOverride = true
+        try {
+            mountScreen()
+            compose.onNodeWithTag("vault_fab_add").performClick()
+            compose.onNodeWithTag("import_photos_button").performClick()
+            compose.onNodeWithTag("local_media_picker_dialog").assertIsDisplayed()
+            compose.onNodeWithTag("local_media_confirm_button").assertIsDisplayed()
         } finally {
             AllFilesPermissionHelper.testAllFilesAccessOverride = null
         }
