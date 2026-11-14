@@ -391,4 +391,31 @@ class VaultFileManagerUiTest {
             AllFilesPermissionHelper.testAllFilesAccessOverride = null
         }
     }
+
+    @Test
+    fun `layout mode toggles between list and two column card grid and persists preference`() {
+        val prefs = context.getSharedPreferences("xome_ui_prefs", Context.MODE_PRIVATE)
+        prefs.edit().remove("vault_is_grid_layout").apply()
+
+        mountScreen()
+        assertEquals(false, prefs.getBoolean("vault_is_grid_layout", false))
+
+        // Files and folders are initially displayed in list mode
+        compose.onNodeWithTag("folder_item_Work").assertIsDisplayed()
+        compose.onNodeWithTag("file_item_1").assertIsDisplayed()
+        compose.onNodeWithTag("file_item_2").assertIsDisplayed()
+
+        // Toggle via top header bar button
+        compose.onNodeWithTag("vault_layout_toggle_button").performClick()
+        assertEquals(true, prefs.getBoolean("vault_is_grid_layout", false))
+
+        // In 2-column card layout, files and folders remain visible and clickable
+        compose.onNodeWithTag("folder_item_Work").assertIsDisplayed()
+        compose.onNodeWithTag("file_item_1").assertIsDisplayed()
+        compose.onNodeWithTag("file_item_2").assertIsDisplayed()
+
+        // Toggle back via section header button
+        compose.onNodeWithTag("vault_header_layout_toggle").performClick()
+        assertEquals(false, prefs.getBoolean("vault_is_grid_layout", false))
+    }
 }

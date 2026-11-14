@@ -122,6 +122,8 @@ data class AppStrings(
     val grantedBadge: String,
     val missingBadge: String,
     val safSystemPickerBtn: String,
+    val switchToListLayout: String,
+    val switchToGridLayout: String,
 
     // Security & Multi-Space Tab
     val languageCardTitle: String,
@@ -277,6 +279,8 @@ val ChineseAppStrings = AppStrings(
     grantedBadge = "已开启",
     missingBadge = "未授权",
     safSystemPickerBtn = "通过系统文件选择器导入 (SAF / 网盘)",
+    switchToListLayout = "切换为列表布局",
+    switchToGridLayout = "切换为双列卡片",
 
     languageCardTitle = "界面语言",
     languageCardSubtitle = "切换中文 / English",
@@ -430,6 +434,8 @@ val EnglishAppStrings = AppStrings(
     grantedBadge = "Granted",
     missingBadge = "Required",
     safSystemPickerBtn = "System Picker (SAF / Cloud)",
+    switchToListLayout = "Switch to List View",
+    switchToGridLayout = "Switch to 2-Column Grid",
 
     languageCardTitle = "Language",
     languageCardSubtitle = "Switch between 简体中文 and English",
