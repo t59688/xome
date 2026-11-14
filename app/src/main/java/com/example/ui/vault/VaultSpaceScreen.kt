@@ -1,6 +1,7 @@
 package com.example.ui.vault
 
 import android.app.Activity
+import android.content.Context
 import android.content.IntentSender
 import android.graphics.BitmapFactory
 import android.os.Build
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -40,6 +42,10 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
@@ -48,6 +54,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Checklist
@@ -62,12 +69,14 @@ import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
@@ -275,6 +284,14 @@ fun VaultSpaceScreen(
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var showNewNoteDialog by remember { mutableStateOf(false) }
     var selectedFileForActions by remember { mutableStateOf<VaultFileEntity?>(null) }
+
+    val uiPrefs = remember { context.getSharedPreferences("xome_ui_prefs", Context.MODE_PRIVATE) }
+    var isGridLayout by rememberSaveable { mutableStateOf(uiPrefs.getBoolean("vault_is_grid_layout", false)) }
+    fun toggleLayoutMode() {
+        val next = !isGridLayout
+        isGridLayout = next
+        uiPrefs.edit().putBoolean("vault_is_grid_layout", next).apply()
+    }
 
     var isSelectionMode by remember { mutableStateOf(false) }
     var selectedFileIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
@@ -551,6 +568,8 @@ fun VaultSpaceScreen(
                 VaultTopHeaderBar(
                     spaceMeta = spaceMeta,
                     showMultiSelectAction = selectedTab == 0,
+                    isGridLayout = isGridLayout,
+                    onToggleLayout = ::toggleLayoutMode,
                     searchQuery = searchQuery,
                     onSearchQueryChange = onSearchQueryChange,
                     onEnterMultiSelect = { isSelectionMode = true },
@@ -789,15 +808,17 @@ fun VaultSpaceScreen(
                     }
                 }
 
-                LazyColumn(
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(if (isGridLayout) 2 else 1),
                     modifier = Modifier
                         .fillMaxSize()
                         .testTag("vault_lazy_list"),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(if (isGridLayout) 10.dp else 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     if (folders.isNotEmpty()) {
-                        item {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
                             Text(
                                 text = strings.encryptedDirectoriesHeader(folders.size),
                                 style = MaterialTheme.typography.labelSmall,
@@ -808,6 +829,7 @@ fun VaultSpaceScreen(
                         items(folders, key = { "folder_${it.id}" }) { folder ->
                             EncryptedFolderRow(
                                 folder = folder,
+                                isGridLayout = isGridLayout,
                                 onClick = {
                                     exitSelectionMode()
                                     onNavigateToFolder(folder)
@@ -818,19 +840,38 @@ fun VaultSpaceScreen(
                     }
 
                     if (files.isNotEmpty() || folders.isEmpty()) {
-                        item {
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = strings.encryptedBlobsHeader(files.size),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = CalcTextMuted,
-                                modifier = Modifier.padding(vertical = 2.dp)
-                            )
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = strings.encryptedBlobsHeader(files.size),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CalcTextMuted
+                                )
+                                IconButton(
+                                    onClick = ::toggleLayoutMode,
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .testTag("vault_header_layout_toggle")
+                                ) {
+                                    Icon(
+                                        imageVector = if (isGridLayout) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
+                                        contentDescription = if (isGridLayout) strings.switchToListLayout else strings.switchToGridLayout,
+                                        tint = CalcTextMuted,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
                         }
                     }
 
                     if (files.isEmpty() && folders.isEmpty()) {
-                        item {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
                             EmptyVaultDirectoryCard(
                                 onImportClick = { showImportSheet = true },
                                 onNewNoteClick = { showNewNoteDialog = true }
@@ -842,6 +883,7 @@ fun VaultSpaceScreen(
                             EncryptedFileCard(
                                 session = session,
                                 fileEntity = fileEntity,
+                                isGridLayout = isGridLayout,
                                 isSelectionMode = isSelectionMode,
                                 isSelected = isSelected,
                                 onClick = {
@@ -861,7 +903,7 @@ fun VaultSpaceScreen(
                         }
                     }
 
-                    item {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
                         Spacer(modifier = Modifier.height(88.dp))
                     }
                 }
@@ -1429,6 +1471,8 @@ private fun BatchActionButton(
 private fun VaultTopHeaderBar(
     spaceMeta: VaultSpaceMetaEntity?,
     showMultiSelectAction: Boolean,
+    isGridLayout: Boolean = false,
+    onToggleLayout: () -> Unit = {},
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onEnterMultiSelect: () -> Unit,
@@ -1478,6 +1522,22 @@ private fun VaultTopHeaderBar(
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 if (showMultiSelectAction) {
+                    IconButton(
+                        onClick = onToggleLayout,
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(VaultSurfaceElevated)
+                            .testTag("vault_layout_toggle_button")
+                    ) {
+                        Icon(
+                            imageVector = if (isGridLayout) Icons.AutoMirrored.Filled.ViewList else Icons.Default.GridView,
+                            contentDescription = if (isGridLayout) strings.switchToListLayout else strings.switchToGridLayout,
+                            tint = CalcTextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
                     IconButton(
                         onClick = onEnterMultiSelect,
                         modifier = Modifier
@@ -1694,64 +1754,124 @@ private fun FolderBreadcrumbBar(
 @Composable
 private fun EncryptedFolderRow(
     folder: VaultFolderEntity,
+    isGridLayout: Boolean = false,
     onClick: () -> Unit,
     onMoreActionsClick: () -> Unit
 ) {
-    Surface(
-        onClick = onClick,
-        color = VaultSurface,
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("folder_item_${folder.folderName}")
-    ) {
-        Row(
+    if (isGridLayout) {
+        Surface(
+            onClick = onClick,
+            color = VaultSurface,
+            shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .testTag("folder_item_${folder.folderName}")
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.weight(1f)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp)
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(VaultAccentPrimary.copy(alpha = 0.12f)),
-                    contentAlignment = Alignment.Center
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Folder,
-                        contentDescription = null,
-                        tint = VaultAccentPrimary,
-                        modifier = Modifier.size(20.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(VaultAccentPrimary.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Folder,
+                            contentDescription = null,
+                            tint = VaultAccentPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onMoreActionsClick,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .testTag("folder_more_${folder.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Folder actions",
+                            tint = CalcTextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
+                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = folder.folderName,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     color = CalcTextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
-
-            IconButton(
-                onClick = onMoreActionsClick,
+        }
+    } else {
+        Surface(
+            onClick = onClick,
+            color = VaultSurface,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("folder_item_${folder.folderName}")
+        ) {
+            Row(
                 modifier = Modifier
-                    .size(36.dp)
-                    .testTag("folder_more_${folder.id}")
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Icon(
-                    imageVector = Icons.Default.MoreVert,
-                    contentDescription = "Folder actions",
-                    tint = CalcTextSecondary,
-                    modifier = Modifier.size(18.dp)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(VaultAccentPrimary.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Folder,
+                            contentDescription = null,
+                            tint = VaultAccentPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Text(
+                        text = folder.folderName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = CalcTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                IconButton(
+                    onClick = onMoreActionsClick,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .testTag("folder_more_${folder.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Folder actions",
+                        tint = CalcTextSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }
@@ -1762,6 +1882,7 @@ private fun EncryptedFolderRow(
 private fun EncryptedFileCard(
     session: VaultSessionManager.ActiveVaultSession,
     fileEntity: VaultFileEntity,
+    isGridLayout: Boolean = false,
     isSelectionMode: Boolean,
     isSelected: Boolean,
     onClick: () -> Unit,
@@ -1807,101 +1928,228 @@ private fun EncryptedFileCard(
         SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(fileEntity.importedAt))
     }
 
-    Surface(
-        color = if (isSelected) VaultAccentPrimary.copy(alpha = 0.09f) else VaultSurface,
-        border = if (isSelected) BorderStroke(1.2.dp, VaultAccentPrimary.copy(alpha = 0.7f)) else null,
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick
-            )
-            .testTag("file_item_${fileEntity.id}")
-    ) {
-        Row(
+    val isVideo = fileEntity.mimeType.startsWith("video/")
+    val icon = remember(fileEntity.mimeType, fileEntity.originalName) {
+        when {
+            fileEntity.mimeType.startsWith("image/") -> Icons.Default.Image
+            isVideo -> Icons.Default.Movie
+            fileEntity.mimeType.contains("sheet") || fileEntity.originalName.endsWith(".xlsx") -> Icons.Default.TableChart
+            fileEntity.mimeType.contains("zip") -> Icons.Default.FolderZip
+            fileEntity.mimeType.startsWith("text/") || fileEntity.originalName.endsWith(".md") -> Icons.Default.Description
+            else -> Icons.AutoMirrored.Filled.InsertDriveFile
+        }
+    }
+
+    if (isGridLayout) {
+        Surface(
+            color = if (isSelected) VaultAccentPrimary.copy(alpha = 0.09f) else VaultSurface,
+            border = if (isSelected) BorderStroke(1.2.dp, VaultAccentPrimary.copy(alpha = 0.7f)) else null,
+            shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = onLongClick
+                )
+                .testTag("file_item_${fileEntity.id}")
         ) {
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(VaultSurfaceElevated),
-                contentAlignment = Alignment.Center
-            ) {
-                if (thumbBitmap != null) {
-                    Image(
-                        bitmap = thumbBitmap!!,
-                        contentDescription = fileEntity.originalName,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } else {
-                    val icon = when {
-                        fileEntity.mimeType.startsWith("image/") -> Icons.Default.Image
-                        fileEntity.mimeType.startsWith("video/") -> Icons.Default.Movie
-                        fileEntity.mimeType.contains("sheet") || fileEntity.originalName.endsWith(".xlsx") -> Icons.Default.TableChart
-                        fileEntity.mimeType.contains("zip") -> Icons.Default.FolderZip
-                        fileEntity.mimeType.startsWith("text/") || fileEntity.originalName.endsWith(".md") -> Icons.Default.Description
-                        else -> Icons.AutoMirrored.Filled.InsertDriveFile
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1.25f)
+                        .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                        .background(VaultSurfaceElevated),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (thumbBitmap != null) {
+                        Image(
+                            bitmap = thumbBitmap!!,
+                            contentDescription = fileEntity.originalName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = VaultAccentPrimary,
+                            modifier = Modifier.size(36.dp)
+                        )
                     }
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = VaultAccentPrimary,
-                        modifier = Modifier.size(22.dp)
+
+                    if (isVideo) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.55f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PlayArrow,
+                                contentDescription = "Video",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    if (isSelectionMode) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(6.dp)
+                        ) {
+                            Checkbox(
+                                checked = isSelected,
+                                onCheckedChange = { onClick() },
+                                colors = CheckboxDefaults.colors(
+                                    checkedColor = VaultAccentPrimary,
+                                    checkmarkColor = Color(0xFF06202B),
+                                    uncheckedColor = Color.White.copy(alpha = 0.85f)
+                                ),
+                                modifier = Modifier.testTag("file_checkbox_${fileEntity.id}")
+                            )
+                        }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = fileEntity.originalName,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = CalcTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${formatByteSize(fileEntity.originalSize)} · $dateStr",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CalcTextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (!isSelectionMode) {
+                            IconButton(
+                                onClick = onMoreActionsClick,
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .testTag("file_more_${fileEntity.id}")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "Actions",
+                                    tint = CalcTextSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
-
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+        }
+    } else {
+        Surface(
+            color = if (isSelected) VaultAccentPrimary.copy(alpha = 0.09f) else VaultSurface,
+            border = if (isSelected) BorderStroke(1.2.dp, VaultAccentPrimary.copy(alpha = 0.7f)) else null,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = onLongClick
+                )
+                .testTag("file_item_${fileEntity.id}")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = fileEntity.originalName,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = CalcTextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "${formatByteSize(fileEntity.originalSize)} · $dateStr",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = CalcTextSecondary,
-                    maxLines = 1
-                )
-            }
-
-            if (isSelectionMode) {
-                Checkbox(
-                    checked = isSelected,
-                    onCheckedChange = { onClick() },
-                    colors = CheckboxDefaults.colors(
-                        checkedColor = VaultAccentPrimary,
-                        checkmarkColor = Color(0xFF06202B),
-                        uncheckedColor = CalcTextSecondary
-                    ),
-                    modifier = Modifier.testTag("file_checkbox_${fileEntity.id}")
-                )
-            } else {
-                IconButton(
-                    onClick = onMoreActionsClick,
+                Box(
                     modifier = Modifier
-                        .size(36.dp)
-                        .testTag("file_more_${fileEntity.id}")
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(VaultSurfaceElevated),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "Actions",
-                        tint = CalcTextSecondary,
-                        modifier = Modifier.size(18.dp)
+                    if (thumbBitmap != null) {
+                        Image(
+                            bitmap = thumbBitmap!!,
+                            contentDescription = fileEntity.originalName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = VaultAccentPrimary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = fileEntity.originalName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = CalcTextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
+                    Text(
+                        text = "${formatByteSize(fileEntity.originalSize)} · $dateStr",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = CalcTextSecondary,
+                        maxLines = 1
+                    )
+                }
+
+                if (isSelectionMode) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onClick() },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = VaultAccentPrimary,
+                            checkmarkColor = Color(0xFF06202B),
+                            uncheckedColor = CalcTextSecondary
+                        ),
+                        modifier = Modifier.testTag("file_checkbox_${fileEntity.id}")
+                    )
+                } else {
+                    IconButton(
+                        onClick = onMoreActionsClick,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("file_more_${fileEntity.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Actions",
+                            tint = CalcTextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
